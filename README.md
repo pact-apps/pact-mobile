@@ -1,286 +1,501 @@
-# Pact Mobile — Setup & Run Guide
+# Pact Mobile — Complete Setup & Build Guide
 
 Pact is a mobile-first accountability app built on Solana. Groups escrow USDC into challenges, complete them to earn rewards, or lose their stake.
 
 **Tech Stack:** React Native (Expo SDK 55) + Solana Web3.js + Anchor + MWA (Mobile Wallet Adapter)
 
+> **PENTING:** App ini Android-only untuk fitur wallet (MWA). Web mode tersedia untuk preview UI saja.
+
 ---
 
 ## Prerequisites
 
-| Tool | Version | Install |
-|------|---------|---------|
-| **Node.js** | v18+ | https://nodejs.org |
-| **npm** | v9+ | Comes with Node.js |
-| **Git** | Any | https://git-scm.com |
+Pastikan semua ini terinstall **sebelum mulai**:
 
-### For Android (full MWA support):
-| Tool | Install |
-|------|---------|
-| **Android Studio** | https://developer.android.com/studio |
-| **Android SDK** | Via Android Studio SDK Manager (API 33+) |
-| **JDK 17** | Via Android Studio or https://adoptium.net |
-| **Phantom Wallet** | Google Play Store (on physical device) |
+| Tool | Version | Install | Cek |
+|------|---------|---------|-----|
+| **Node.js** | v18+ | https://nodejs.org | `node -v` |
+| **npm** | v9+ | Sudah include di Node.js | `npm -v` |
+| **Git** | Any | https://git-scm.com | `git --version` |
+| **Android Studio** | Latest | https://developer.android.com/studio | Buka app |
+| **JDK 17** | 17+ | Via Android Studio atau https://adoptium.net | `java -version` |
 
-### For Web (quick preview, no wallet features):
-No additional tools needed — runs in browser.
+### Android Studio SDK Setup
+
+Buka Android Studio, lalu:
+
+1. **File** → **Settings** → **Languages & Frameworks** → **Android SDK**
+2. Tab **SDK Platforms**: centang **Android 14 (API 34)** atau yang terbaru
+3. Tab **SDK Tools**: centang semua ini:
+   - **Android SDK Build-Tools** (versi terbaru)
+   - **Android SDK Command-line Tools**
+   - **Android SDK Platform-Tools**
+   - **NDK (Side by side)** — centang **Show Package Details**, pastikan versi **27.1.12297006** ada
+     > Kalau NDK 27.1 gagal download, lihat bagian [Troubleshooting NDK](#ndk-tidak-bisa-diinstall)
+   - **CMake** (versi 3.22.1)
+4. Klik **Apply** dan tunggu download selesai
 
 ---
 
-## 1. Clone & Install
+## Step 1 — Clone & Install
 
 ```bash
-git clone <repo-url>
-cd pact-mobile
+# PENTING: Clone ke path yang PENDEK!
+# JANGAN clone ke folder seperti:
+#   C:\Users\NamaAnda\Desktop\Projects\hackathon\pact-app-mobile\pact-mobile
+#
+# Windows punya limit 260 karakter untuk path file.
+# Path yang terlalu panjang AKAN menyebabkan build GAGAL pada tahap CMake/ninja.
+# Error yang muncul: "Filename longer than 260 characters"
+
+# BENAR — clone langsung ke root drive:
+cd C:\
+git clone <repo-url> pact
+cd C:\pact
+
+# Install dependencies
 npm install
 ```
 
+> **KRITIS:** Jika kamu clone ke path panjang (misal Desktop), build PASTI gagal di tahap native compilation. Ini bukan bug app — ini limitasi Windows. Selalu gunakan path pendek seperti `C:\pact`.
+
 ---
 
-## 2. Environment Setup
+## Step 2 — Set Environment Variables
 
-### Set ANDROID_HOME (required for Android builds)
+### ANDROID_HOME
 
 **Windows (PowerShell):**
 ```powershell
-# Check if already set
+# Cek apakah sudah di-set
 echo $env:ANDROID_HOME
 
-# If not set, add to your system environment variables:
-# Default path: C:\Users\<YourUser>\AppData\Local\Android\Sdk
-[Environment]::SetEnvironmentVariable("ANDROID_HOME", "$env:LOCALAPPDATA\Android\Sdk", "User")
+# Kalau kosong, set:
+# Path default biasanya: C:\Users\<NamaAnda>\AppData\Local\Android\Sdk
+# ATAU: C:\Android\Sdk (tergantung install)
+[Environment]::SetEnvironmentVariable("ANDROID_HOME", "C:\Android\Sdk", "User")
+
+# Restart terminal setelah set
 ```
 
-**macOS/Linux (bash):**
+**macOS/Linux:**
 ```bash
-# Add to ~/.bashrc or ~/.zshrc
+# Tambahkan ke ~/.bashrc atau ~/.zshrc
 export ANDROID_HOME=$HOME/Android/Sdk
 export PATH=$PATH:$ANDROID_HOME/emulator
 export PATH=$PATH:$ANDROID_HOME/platform-tools
+source ~/.bashrc
 ```
 
-### Verify Android setup
+### Verifikasi setup
 ```bash
 npx react-native doctor
 ```
 
-All Android-related checks should be green. iOS can be ignored (Android-only app).
+Semua cek Android harus hijau. iOS bisa diabaikan.
 
 ---
 
-## 3. Backend Connection
+## Step 3 — Backend Connection
 
-The app connects to the Pact backend API. You have two options:
+App butuh koneksi ke Pact backend API (Rust/Axum server).
 
-### Option A: Use shared ngrok URL (easiest)
+### Option A: Gunakan ngrok URL tim (paling mudah)
 
-Ask the team for the current ngrok URL, then edit `src/utils/constants.js`:
+Tanya tim untuk URL ngrok yang aktif, lalu edit file `src/utils/constants.js`:
 
 ```js
-export const API_BASE_URL = "https://your-ngrok-url.ngrok-free.dev";
+export const API_BASE_URL = "https://xxxx-xxxx.ngrok-free.dev";
 ```
 
-### Option B: Run backend locally
+### Option B: Jalankan backend sendiri
 
-If running the Rust backend on your machine (or WSL):
-
+#### Di WSL/Linux:
 ```bash
-# In the pact-backend directory
+cd ~/pact-backend
 cargo run
-# Server starts on http://localhost:8080
+# Server jalan di http://localhost:8080
 ```
 
-Then set `API_BASE_URL` based on how you're running the app:
+#### Expose ke Android device:
+Android **tidak bisa** akses `localhost` dari PC secara langsung. Pilih salah satu:
 
-| Running on | API_BASE_URL |
-|---|---|
-| Android Emulator | `http://10.0.2.2:8080` |
-| Physical Android device | Use ngrok: `ngrok http 8080` → use the https URL |
-| Web browser | `http://localhost:8080` |
+| Cara run app | API_BASE_URL | Perlu ngrok? |
+|---|---|---|
+| **Android Emulator** | `http://10.0.2.2:8080` | Tidak |
+| **HP fisik via USB** | `https://xxx.ngrok-free.dev` | Ya |
+| **Web browser** | `http://localhost:8080` | Tidak |
+
+#### Setup ngrok (untuk HP fisik):
+```powershell
+# Install ngrok (Windows)
+winget install ngrok.ngrok
+
+# Daftar akun gratis di https://ngrok.com lalu:
+ngrok config add-authtoken YOUR_TOKEN
+
+# Jalankan (backend harus sudah running):
+ngrok http 8080
+# Copy URL https yang muncul → paste ke constants.js
+```
+
+> **Catatan:** URL ngrok gratis berubah tiap restart. Update `API_BASE_URL` setiap sesi baru.
+
+#### Cara test backend jalan:
+Buka di browser: `https://your-ngrok-url.ngrok-free.dev/api/scores?limit=10&offset=0`
+
+Kalau muncul `{"error":"Missing Authorization header"}` → **backend jalan dengan benar**. Error itu normal karena endpoint butuh JWT.
 
 ---
 
-## 4. Run the App
+## Step 4 — Siapkan Device/Emulator
 
-### Option A: Android Device (Recommended — full MWA support)
+### Option A: HP Android Fisik (Recommended)
 
-This is the **production-intended** experience with real wallet signing via Phantom/Solflare.
+1. **Aktifkan Developer Options:**
+   - Buka **Settings** → **About Phone** → tap **Build Number** 7x berturut-turut
+   - Muncul toast "You are now a developer!"
 
-```bash
-# 1. Connect Android phone via USB (enable Developer Options + USB Debugging)
-# 2. Verify device is connected:
-adb devices
+2. **Aktifkan USB Debugging:**
+   - **Settings** → **Developer Options** → nyalakan **USB Debugging**
 
-# 3. Build and run:
-npx expo run:android
-```
+3. **Colok USB ke PC:**
+   - Di HP muncul popup **"Allow USB Debugging?"** → tap **Allow** (centang "Always allow")
 
-**First-time build** takes 5–10 minutes (downloads Gradle, builds native code). Subsequent runs are faster.
+4. **Verifikasi:**
+   ```powershell
+   adb devices
+   # Harus muncul device ID, BUKAN "unauthorized"
+   ```
 
-**On-device setup:**
-1. Install **Phantom Wallet** from Google Play Store
-2. Open Phantom → Settings → Developer Settings → Enable **Devnet**
-3. Tap "Airdrop SOL" in Phantom to get devnet SOL for gas fees
+5. **Install Phantom Wallet:**
+   - Download dari **Google Play Store** di HP
+   - Buka Phantom → buat/import wallet
+   - **Settings** → **Developer Settings** → switch ke **Devnet**
+   - Tap **"Airdrop SOL"** untuk gas fee
 
 ### Option B: Android Emulator
 
-```bash
-# 1. Open Android Studio → Virtual Device Manager → Create device
-#    Recommended: Pixel 7, API 34 (Android 14), x86_64 image
+1. Buka **Android Studio** → **Virtual Device Manager** (atau **More Actions** → **Virtual Device Manager**)
+2. Klik **Create Virtual Device**
+3. Pilih **Pixel 7** atau **Pixel 7a** → **Next**
+4. Pilih system image:
+   - **PENTING:** Pilih yang ada logo **Play Store** (segitiga) supaya bisa install Phantom
+   - Rekomendasi: **API 34 (Android 14)** — `Google Play | x86_64`
+   - Kalau belum ada, klik **Download** dulu
+5. **Next** → **Finish**
+6. Klik tombol **Play** untuk start emulator
 
-# 2. Start the emulator from Android Studio
+**Install Phantom di emulator:**
+- Buka **Google Play Store** di emulator
+- Login Google Account
+- Search **"Phantom"** → Install
+- Setup wallet → switch ke Devnet
 
-# 3. Install Fake Wallet for MWA testing on emulator:
-#    Download from: https://github.com/niclasdoerr/solana-mobile-fake-wallet/releases
-#    Then: adb install fake-wallet.apk
+> **Alternatif tanpa Play Store:** Download APK Phantom dari [APKMirror](https://www.apkmirror.com/apk/phantom-technologies-inc/phantom-crypto-wallet/) lalu:
+> ```powershell
+> adb install phantom.apk
+> ```
 
-# 4. Build and run:
-npx expo run:android
-```
-
-### Option C: Web Browser (Quick Preview — No Wallet)
-
-For quick UI preview without Solana wallet features. **MWA does not work on web** — wallet connect, transactions, and signing will not function. Useful for checking layouts, navigation, and API-dependent screens (leaderboard, etc.).
-
-```bash
-npx expo start --web
-```
-
-This opens the app at `http://localhost:8081` in your browser.
-
-> **Note:** Some features may show errors on web since Solana mobile libraries are Android-native. The wallet connect button will not work. You can still browse the UI structure, navigation tabs, and any screens that don't require a connected wallet.
+> **Emulator tidak ada internet?** Tutup emulator, lalu start ulang dengan DNS manual:
+> ```powershell
+> # Lihat nama AVD
+> emulator -list-avds
+> # Start dengan DNS Google
+> emulator -avd Pixel_7a -dns-server 8.8.8.8,8.8.4.4
+> ```
+> Kalau `emulator` command not found, gunakan full path:
+> ```powershell
+> C:\Android\Sdk\emulator\emulator -list-avds
+> ```
 
 ---
 
-## 5. Testing the Full Flow (Android only)
+## Step 5 — Build & Run
 
-### Step-by-step:
+```powershell
+cd C:\pact
+npx expo run:android
+```
+
+### Apa yang terjadi:
+
+1. **Gradle download dependencies** (~500MB pertama kali) — bisa 5-15 menit
+2. **Compile native code** (C++, Kotlin, Java)
+3. **Build APK** dan install ke device/emulator
+4. **Start Metro Bundler** — JS bundle server
+5. **App terbuka** di device/emulator
+
+> **PENTING:** Jangan tutup terminal setelah build selesai! Metro bundler harus tetap jalan.
+
+### Build berhasil kalau muncul:
+```
+BUILD SUCCESSFUL in Xm Xs
+...
+Starting Metro Bundler
+› Installing .../app-debug.apk
+› Opening com.pact.mobile/.MainActivity
+```
+
+### Subsequent runs (setelah build pertama):
+```powershell
+# Kalau native code tidak berubah, cukup start Metro:
+npx expo start
+
+# Kalau ada perubahan native dependencies:
+npx expo run:android
+```
+
+---
+
+## Step 6 — Web Preview (Tanpa Android)
+
+Kalau belum setup Android atau mau quick preview UI:
+
+```powershell
+cd C:\pact
+npx expo start --web
+```
+
+Buka `http://localhost:8081` di browser.
+
+> **Limitasi web:**
+> - Tombol **"Connect Wallet"** tidak akan berfungsi (MWA = Android only)
+> - Semua fitur yang butuh wallet (create/join/submit challenge) tidak jalan
+> - Berguna untuk cek layout, navigasi, dan screen yang tidak butuh wallet (Leaderboard jika backend jalan)
+
+---
+
+## Step 7 — Testing Full Flow (Android)
 
 ```
 1. CONNECT WALLET
-   Home screen → "Connect Wallet"
-   → Phantom opens → Approve connection
-   → Your wallet address appears on Home screen
+   Home screen → tap "Connect Wallet"
+   → Phantom terbuka → tap "Approve"
+   → Wallet address muncul di Home screen
 
 2. GET DEVNET USDC
-   You need devnet USDC to create/join challenges.
-   → Mint devnet USDC at: https://spl-token-ui.com
-   → Or ask team for devnet USDC faucet script
+   Butuh devnet USDC untuk create/join challenge.
+   → Mint devnet USDC di: https://spl-token-ui.com
+   → Atau minta ke tim
 
-3. CREATE A CHALLENGE
-   Home → "+ New Challenge"
-   → Fill in: Title, Stake amount (in USDC), Duration, Max participants
-   → Submit → Approve transaction in Phantom
-   → Challenge appears in the list
+3. CREATE CHALLENGE
+   Home → tap "+ New Challenge"
+   → Isi: Title, Stake (dalam USDC), Duration, Max participants
+   → Submit → Approve di Phantom
+   → Challenge muncul di list
 
-4. JOIN A CHALLENGE
-   → Tap a challenge → "Join Challenge"
-   → Approve transaction (stakes your USDC)
+4. JOIN CHALLENGE (perlu wallet berbeda/device lain)
+   → Tap challenge → "Join Challenge"
+   → Approve transaction (USDC di-stake)
 
-5. START CHALLENGE (creator only, needs ≥2 participants)
-   → Tap your challenge → "Start Challenge"
+5. START CHALLENGE (creator saja, minimal 2 participant)
+   → Tap challenge → "Start Challenge"
    → Approve transaction
 
 6. SUBMIT PROOF
    → "Submit — I Succeeded"
-   → Pick a photo from gallery
-   → Photo uploads to backend → SHA256 hash sent on-chain
+   → Pilih foto dari gallery
+   → Foto upload ke backend → SHA256 hash dikirim on-chain
    → Approve transaction
 
 7. SETTLE
-   → After submission window ends → "Settle Challenge"
-   → Winners receive pool rewards
+   → Setelah submission window habis → "Settle Challenge"
+   → Token didistribusikan ke winner
 ```
-
-### Testing with multiple wallets:
-To test the full flow (join from different wallets), you need multiple Phantom accounts or test on multiple devices.
 
 ---
 
-## 6. Development Commands
+## Troubleshooting
+
+### Build errors
+
+#### NDK tidak bisa diinstall
+
+Kalau NDK 27.1.12297006 gagal download (connection reset, laptop sleep, dll):
+
+```
+Error: NDK at C:\Android\Sdk\ndk\27.1.12297006 did not have a source.properties file
+```
+
+**Solusi:** Kamu punya NDK versi lain (misal 27.0)? Copy sebagai 27.1:
+
+```powershell
+# Hapus folder NDK yang corrupt
+Remove-Item -Recurse -Force "C:\Android\Sdk\ndk\27.1.12297006"
+
+# Copy NDK yang sudah ada
+Copy-Item -Recurse "C:\Android\Sdk\ndk\27.0.12077973" "C:\Android\Sdk\ndk\27.1.12297006"
+```
+
+Versi 27.0 dan 27.1 kompatibel — build akan jalan.
+
+#### "Filename longer than 260 characters"
+
+```
+ninja: error: Stat(...): Filename longer than 260 characters
+```
+
+**Penyebab:** Project ada di path terlalu panjang (misal `C:\Users\Nama\Desktop\folder\subfolder\pact-mobile`).
+
+**Solusi:** Pindahkan project ke root drive:
+```powershell
+Copy-Item -Recurse "C:\path\panjang\pact-mobile" "C:\pact"
+cd C:\pact
+
+# Hapus build cache lama
+Remove-Item -Recurse -Force "C:\pact\android\.cxx" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force "C:\pact\android\app\build" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force "C:\pact\android\build" -ErrorAction SilentlyContinue
+
+npx expo run:android
+```
+
+#### "Could not find org.asyncstorage.shared_storage:storage-android"
+
+**Penyebab:** `@react-native-async-storage/async-storage` versi 3.x butuh Maven repo tambahan.
+
+**Solusi:** Downgrade ke versi 2.x:
+```bash
+npm install @react-native-async-storage/async-storage@2.1.2
+```
+
+#### Build gagal di tengah jalan (laptop sleep/mati)
+
+Gradle punya cache. Jalankan ulang:
+```bash
+npx expo run:android
+```
+
+Build akan lanjut dari cache — tidak perlu download ulang semua.
+
+Kalau masih error setelah restart, clean build:
+```powershell
+Remove-Item -Recurse -Force "C:\pact\android\.cxx" -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force "C:\pact\android\app\build" -ErrorAction SilentlyContinue
+npx expo run:android
+```
+
+> **Tips:** Set laptop supaya tidak sleep saat build:
+> **Settings** → **System** → **Power** → **Screen and sleep** → set ke **Never** (sementara)
+
+### Runtime errors
+
+| Problem | Solusi |
+|---|---|
+| `npm install` fails | Hapus `node_modules` dan `package-lock.json`, run `npm install` lagi |
+| `ANDROID_HOME` not set | Lihat Step 2 |
+| `adb devices` kosong | Enable USB Debugging, trust PC di HP |
+| Build fails "SDK not found" | Android Studio → SDK Manager → Install API 34+ |
+| Metro: "Unable to resolve module" | `npx expo start --clear` |
+| MWA: "No wallet found" | Install Phantom (HP) atau download APK manual (emulator) |
+| Backend connection refused | Cek ngrok masih jalan / `API_BASE_URL` benar |
+| `{"error":"Missing Authorization header"}` di browser | **Normal** — backend jalan, auth otomatis di app |
+| Web: tombol wallet gak jalan | **Expected** — MWA Android-only |
+| Emulator gak ada internet | Restart emulator dengan `-dns-server 8.8.8.8` (lihat Step 4) |
+| `rmdir /s /q` error di PowerShell | Gunakan `Remove-Item -Recurse -Force "path"` (PowerShell syntax berbeda dari CMD) |
+
+---
+
+## Development Commands
 
 ```bash
-# Start Metro bundler only (if already built native code)
+# Start Metro bundler (kalau native sudah di-build)
 npx expo start
 
-# Build + run on Android
+# Build + run di Android
 npx expo run:android
 
 # Web preview
 npx expo start --web
 
-# Type checking
+# Type check
 npx tsc --noEmit
 
-# Clear Metro cache (if you get stale bundle errors)
+# Clear Metro cache
 npx expo start --clear
+
+# Cek device terhubung
+adb devices
+
+# Install APK manual
+adb install path/to/app.apk
 ```
 
 ---
 
-## 7. Project Structure
+## Project Structure
 
 ```
 pact-mobile/
-├── App.tsx                    # Root component (QueryClient + SafeArea + Navigator)
-├── polyfills.ts               # Buffer, URL, crypto polyfills for Solana
+├── App.tsx                    # Root (QueryClient + SafeArea + Navigator)
+├── polyfills.ts               # Buffer, URL, crypto polyfills untuk Solana
 ├── index.ts                   # Entry point
-├── app.json                   # Expo config (Android-only)
+├── app.json                   # Expo config
 ├── idl/
-│   └── pact_escrow.json       # Anchor IDL for on-chain program
+│   └── pact_escrow.json       # Anchor IDL (on-chain program interface)
+├── android/                   # Native Android project (auto-generated by Expo)
+│   ├── build.gradle           # Root Gradle config (NDK override di sini)
+│   └── app/build.gradle       # App Gradle config
 └── src/
     ├── navigation/
-    │   └── AppNavigator.tsx    # Bottom tabs (Challenges, Leaderboard, Profile)
+    │   └── AppNavigator.tsx    # Bottom tabs: Challenges, Leaderboard, Profile
     ├── screens/
     │   ├── HomeScreen.tsx      # Challenge list + wallet connect
     │   ├── CreateChallengeScreen.tsx
-    │   ├── ChallengeDetailScreen.tsx  # Join/Start/Submit/Settle/Dispute
-    │   ├── LeaderboardScreen.tsx
-    │   └── ProfileScreen.tsx   # Wallet info, balances, commitment score
+    │   ├── ChallengeDetailScreen.tsx  # Join/Start/Submit/Settle/Dispute + proof upload
+    │   ├── LeaderboardScreen.tsx      # Commitment score rankings
+    │   └── ProfileScreen.tsx          # Wallet info, balances, score stats
     ├── services/
-    │   ├── wallet.ts           # MWA (authorize, sign, send)
-    │   ├── transactions.ts     # On-chain tx builders (create, join, start, submit, finalize, dispute, vote)
-    │   ├── anchor.ts           # Anchor program + account fetchers
-    │   ├── solana.ts           # RPC connection, balance queries
-    │   ├── pactApi.ts          # Backend REST API client
+    │   ├── wallet.ts           # MWA: authorize, reauthorize, sign tx, sign message
+    │   ├── transactions.ts     # On-chain: create, join, start, submit, finalize, dispute, vote
+    │   ├── anchor.ts           # Anchor Program + account fetchers
+    │   ├── solana.ts           # RPC connection, SOL/USDC balance queries
+    │   ├── pactApi.ts          # Backend REST API client (auth, challenges, proofs, scores)
     │   ├── apiInstance.ts      # Singleton API instance
     │   └── backendAuth.ts      # Wallet signature → JWT auth flow
     ├── hooks/
     │   └── useChallenge.ts     # React Query hooks for on-chain data
     ├── store/
-    │   └── useAppStore.ts      # Zustand global state (wallet, balances)
+    │   └── useAppStore.ts      # Zustand: wallet state, balances
     └── utils/
-        ├── constants.js        # Network, program ID, USDC mint, API URL
+        ├── constants.js        # Network config, program ID, USDC mint, API URL
         └── explorer.ts         # Solana Explorer link helpers
 ```
 
 ---
 
-## 8. Troubleshooting
+## Key Config Values
 
-| Problem | Solution |
-|---|---|
-| `npm install` fails | Delete `node_modules` and `package-lock.json`, run `npm install` again |
-| `ANDROID_HOME` not set | See Step 2 above |
-| `adb devices` shows nothing | Enable USB Debugging on phone, trust the computer |
-| Build fails "SDK not found" | Open Android Studio → SDK Manager → Install API 33+ |
-| Metro: "Unable to resolve module" | Run `npx expo start --clear` |
-| MWA: "No wallet found" | Install Phantom (device) or Fake Wallet (emulator) |
-| Backend connection refused | Check ngrok is running / `API_BASE_URL` is correct |
-| "Missing Authorization header" | Normal — means backend is reachable, auth happens automatically in-app |
-| Web: wallet button doesn't work | Expected — MWA is Android-only, web is for UI preview only |
-| First build very slow | Normal — Gradle downloads ~500MB on first run |
+Semua config ada di `src/utils/constants.js`:
+
+| Constant | Value | Keterangan |
+|---|---|---|
+| `SOLANA_NETWORK` | `devnet` | Solana cluster |
+| `PROGRAM_ID` | `6JTfaG...bCs` | Deployed Pact Escrow program on devnet |
+| `USDC_MINT` | `4zMMC9...DU` | Devnet USDC token mint |
+| `API_BASE_URL` | ngrok URL | Backend API endpoint — update setiap sesi |
+| `TREASURY_WALLET` | `HN7cAB...p8` | Fee collection wallet (placeholder) |
 
 ---
 
-## 9. Key Config Values
+## Backend Setup (Separate Repo)
 
-All configurable values are in `src/utils/constants.js`:
+Backend menggunakan **Rust + Axum**, berjalan di port 8080. Lihat README di repo `pact-backend` untuk setup lengkap.
 
-| Constant | Value | Description |
-|---|---|---|
-| `SOLANA_NETWORK` | `devnet` | Solana cluster |
-| `PROGRAM_ID` | `6JTfaG...bCs` | Deployed Pact Escrow program |
-| `USDC_MINT` | `4zMMC9...DU` | Devnet USDC token mint |
-| `API_BASE_URL` | ngrok URL | Backend API endpoint |
-| `TREASURY_WALLET` | `HN7cAB...p8` | Fee collection wallet |
+Secara singkat:
+```bash
+# Di WSL/Linux
+cd pact-backend
+cp .env.example .env  # Edit config (database URL, JWT secret, RPC URL, program ID)
+cargo run
+# Server starts at http://localhost:8080
+```
+
+API endpoints yang dipakai app:
+- `GET /api/auth/nonce` — Get nonce untuk wallet signature
+- `POST /api/auth/verify` — Verify signature, return JWT
+- `GET /api/challenges` — List semua challenges
+- `POST /api/proofs/upload` — Upload proof image (multipart)
+- `GET /api/scores/:wallet` — Get commitment score
+- `GET /api/scores?limit=50&offset=0` — Leaderboard
