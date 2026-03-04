@@ -21,7 +21,7 @@
       },
       "permissions": ["android.permission.INTERNET"]
     },
-    "platforms": ["android"],
+    "platforms": ["android", "web"],
     "extra": {
       "eas": {
         "projectId": "pact-mobile"
