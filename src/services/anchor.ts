@@ -1,9 +1,119 @@
-import { Program, AnchorProvider } from "@coral-xyz/anchor";
+import { Program, AnchorProvider, BN } from "@coral-xyz/anchor";
 import { PublicKey, Keypair } from "@solana/web3.js";
 import { PROGRAM_ID } from "../utils/constants";
 import { connection } from "./solana";
 
 import idl from "../../idl/pact_escrow.json";
+
+// ==========================================
+// MANUAL DECODER (bypasses Buffer polyfill issues in Hermes)
+// Uses DataView instead of Buffer.readUIntLE etc.
+// ==========================================
+
+const CHALLENGE_DISCRIMINATOR = [119, 250, 161, 121, 119, 81, 22, 208];
+
+const STATUS_VARIANTS = ["open", "active", "submission", "allFailVoting", "settled", "cancelled"];
+
+function matchesDiscriminator(data: Uint8Array, disc: number[]): boolean {
+  if (data.length < 8) return false;
+  for (let i = 0; i < 8; i++) {
+    if (data[i] !== disc[i]) return false;
+  }
+  return true;
+}
+
+function decodeChallenge(data: Uint8Array) {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let offset = 8; // skip discriminator
+
+  // creator: pubkey (32 bytes)
+  const creator = new PublicKey(data.slice(offset, offset + 32));
+  offset += 32;
+
+  // challenge_id: borsh string (u32 len + utf8)
+  const idLen = view.getUint32(offset, true);
+  offset += 4;
+  const challengeId = new TextDecoder().decode(data.slice(offset, offset + idLen));
+  offset += idLen;
+
+  // title: borsh string
+  const titleLen = view.getUint32(offset, true);
+  offset += 4;
+  const title = new TextDecoder().decode(data.slice(offset, offset + titleLen));
+  offset += titleLen;
+
+  // stake_amount: u64 (read as two u32s)
+  const stakeLow = view.getUint32(offset, true);
+  const stakeHigh = view.getUint32(offset + 4, true);
+  const stakeAmount = new BN(stakeLow).add(new BN(stakeHigh).shln(32));
+  offset += 8;
+
+  // max_participants: u8
+  const maxParticipants = data[offset++];
+
+  // participant_count: u8
+  const participantCount = data[offset++];
+
+  // deposit_count: u8
+  const depositCount = data[offset++];
+
+  // duration_seconds: i64
+  const durLow = view.getUint32(offset, true);
+  const durHigh = view.getUint32(offset + 4, true);
+  const durationSeconds = new BN(durLow).add(new BN(durHigh).shln(32));
+  offset += 8;
+
+  // created_at: i64
+  const catLow = view.getUint32(offset, true);
+  const catHigh = view.getUint32(offset + 4, true);
+  const createdAt = new BN(catLow).add(new BN(catHigh).shln(32));
+  offset += 8;
+
+  // deadline: i64
+  const dlLow = view.getUint32(offset, true);
+  const dlHigh = view.getUint32(offset + 4, true);
+  const deadline = new BN(dlLow).add(new BN(dlHigh).shln(32));
+  offset += 8;
+
+  // submission_deadline: i64
+  const sdlLow = view.getUint32(offset, true);
+  const sdlHigh = view.getUint32(offset + 4, true);
+  const submissionDeadline = new BN(sdlLow).add(new BN(sdlHigh).shln(32));
+  offset += 8;
+
+  // status: enum (1 byte variant index)
+  const statusIdx = data[offset++];
+  const statusKey = STATUS_VARIANTS[statusIdx] || "open";
+  const status: Record<string, object> = {};
+  status[statusKey] = {};
+
+  // cycle: u8
+  const cycle = data[offset++];
+
+  // bump: u8
+  const bump = data[offset++];
+
+  // vault_bump: u8
+  const vaultBump = data[offset++];
+
+  return {
+    creator,
+    challengeId,
+    title,
+    stakeAmount,
+    maxParticipants,
+    participantCount,
+    depositCount,
+    durationSeconds,
+    createdAt,
+    deadline,
+    submissionDeadline,
+    status,
+    cycle,
+    bump,
+    vaultBump,
+  };
+}
 
 // ==========================================
 // SETUP PROGRAM
@@ -68,14 +178,19 @@ export function getParticipantPDA(
 // ==========================================
 
 export async function fetchChallenge(challengeId: string) {
-  const program = getProgram();
   const [challengePDA] = getChallengePDA(challengeId);
 
   try {
-    const challenge = await accounts(program).challenge.fetch(challengePDA);
+    const accountInfo = await connection.getAccountInfo(challengePDA);
+    if (!accountInfo) {
+      console.log("Challenge not found:", challengeId);
+      return null;
+    }
+    const data = new Uint8Array(accountInfo.data);
+    const decoded = decodeChallenge(data);
     return {
       publicKey: challengePDA,
-      account: challenge,
+      account: decoded,
     };
   } catch (error) {
     console.log("Challenge not found:", challengeId);
@@ -84,16 +199,27 @@ export async function fetchChallenge(challengeId: string) {
 }
 
 export async function fetchAllChallenges() {
-  const program = getProgram();
-
   try {
-    const allChallenges = await accounts(program).challenge.all();
-    return allChallenges.map((item: any) => ({
-      publicKey: item.publicKey,
-      account: item.account,
-    }));
-  } catch (error) {
-    console.error("Error fetching challenges:", error);
+    console.log("[DEBUG] fetchAllChallenges: calling getProgramAccounts...");
+    const rawAccounts = await connection.getProgramAccounts(PROGRAM_ID);
+    console.log("[DEBUG] fetchAllChallenges: got", rawAccounts.length, "raw accounts");
+
+    const challenges = [];
+    for (const item of rawAccounts) {
+      const data = new Uint8Array(item.account.data);
+      if (!matchesDiscriminator(data, CHALLENGE_DISCRIMINATOR)) continue;
+
+      try {
+        const decoded = decodeChallenge(data);
+        challenges.push({ publicKey: item.pubkey, account: decoded });
+      } catch (e: any) {
+        console.warn("[DEBUG] decode challenge failed:", item.pubkey.toBase58(), e?.message);
+      }
+    }
+    console.log("[DEBUG] fetchAllChallenges: decoded", challenges.length, "challenges");
+    return challenges;
+  } catch (error: any) {
+    console.error("[DEBUG] fetchAllChallenges error:", error?.message || error);
     return [];
   }
 }

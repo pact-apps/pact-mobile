@@ -25,15 +25,26 @@ export async function authorizeWallet(): Promise<{
   publicKey: PublicKey;
   authToken: string;
 }> {
+  console.log("[DEBUG] transact: starting...");
   const result = await transact(async (wallet: Web3MobileWallet) => {
+    console.log("[DEBUG] transact: inside callback, calling authorize...");
     const authResult = await wallet.authorize({
       identity: APP_IDENTITY,
       cluster: "devnet",
     });
+    console.log("[DEBUG] transact: authorize returned:", JSON.stringify(authResult.accounts?.[0]?.address));
     return authResult;
   });
+  console.log("[DEBUG] transact: resolved, address type:", typeof result.accounts[0].address);
+  console.log("[DEBUG] address value:", result.accounts[0].address);
 
-  const publicKey = new PublicKey(result.accounts[0].address);
+  // MWA native returns address as Uint8Array/base64, not base58
+  const rawAddress = result.accounts[0].address;
+  const publicKey = new PublicKey(
+    typeof rawAddress === "string"
+      ? Buffer.from(rawAddress, "base64")
+      : rawAddress
+  );
   const authToken = result.auth_token;
 
   await AsyncStorage.setItem(AUTH_TOKEN_KEY, authToken);
@@ -93,15 +104,19 @@ export async function deauthorizeWallet(): Promise<void> {
 export async function signAndSendTransaction(
   transaction: Transaction
 ): Promise<string> {
+  console.log("[DEBUG] signAndSend: getting blockhash...");
   const { blockhash, lastValidBlockHeight } =
     await connection.getLatestBlockhash();
+  console.log("[DEBUG] signAndSend: blockhash OK:", blockhash.slice(0, 8));
   transaction.recentBlockhash = blockhash;
 
   const walletAddr = await AsyncStorage.getItem(WALLET_KEY);
   if (!walletAddr) throw new Error("Wallet not connected");
   transaction.feePayer = new PublicKey(walletAddr);
 
-  const signature = await transact(async (wallet: Web3MobileWallet) => {
+  // Only sign inside transact — keep RPC calls outside MWA session
+  console.log("[DEBUG] signAndSend: opening MWA to sign...");
+  const signedTx = await transact(async (wallet: Web3MobileWallet) => {
     // Reauthorize session
     const cachedToken = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
     if (cachedToken) {
@@ -118,19 +133,26 @@ export async function signAndSendTransaction(
       await AsyncStorage.setItem(AUTH_TOKEN_KEY, authResult.auth_token);
     }
 
-    // Sign and send
+    // Only sign — don't send inside MWA session
     const signedTransactions = await wallet.signTransactions({
       transactions: [transaction],
     });
-    const rawTx = signedTransactions[0].serialize();
-    return await connection.sendRawTransaction(rawTx);
+    console.log("[DEBUG] signAndSend: transaction signed OK");
+    return signedTransactions[0];
   });
+
+  // Send the signed transaction outside MWA session
+  console.log("[DEBUG] signAndSend: sending raw transaction...");
+  const rawTx = signedTx.serialize();
+  const signature = await connection.sendRawTransaction(rawTx);
+  console.log("[DEBUG] signAndSend: sent! signature:", signature);
 
   await connection.confirmTransaction({
     signature,
     blockhash,
     lastValidBlockHeight,
   });
+  console.log("[DEBUG] signAndSend: confirmed!");
 
   return signature;
 }

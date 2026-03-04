@@ -3,9 +3,12 @@ import { PublicKey, clusterApiUrl } from "@solana/web3.js";
 // === NETWORK ===
 // Pakai devnet untuk development
 export const SOLANA_NETWORK = "devnet";
-export const SOLANA_RPC_URL = clusterApiUrl("devnet");
-// Nanti production ganti ke: clusterApiUrl("mainnet-beta")
-// Atau pakai RPC provider: "https://mainnet.helius-rpc.com/?api-key=YOUR_KEY"
+// PENTING: Public RPC Solana (api.devnet.solana.com) menonaktifkan getProgramAccounts
+// yang dibutuhkan Anchor untuk fetch semua challenges.
+// Wajib pakai RPC private — daftar GRATIS di https://helius.dev
+// lalu ganti URL di bawah:
+export const SOLANA_RPC_URL = "https://devnet.helius-rpc.com/?api-key=0a7524a0-c695-4137-bf7f-26e8b1eb7b77";
+// Nanti production: "https://mainnet.helius-rpc.com/?api-key=YOUR_KEY"
 
 // === PROGRAM ===
 // Program ID kamu (dari anchor deploy)

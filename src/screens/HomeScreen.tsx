@@ -64,20 +64,33 @@ export default function HomeScreen({ navigation }: any) {
 
   const handleConnect = async () => {
     try {
+      console.log("[DEBUG] handleConnect: calling authorizeWallet...");
       const result = await authorizeWallet();
+      console.log("[DEBUG] authorizeWallet OK:", result.publicKey.toBase58());
       setWallet(result.publicKey, result.authToken);
-      const sol = await getSolBalance(result.publicKey);
-      const usdc = await getUsdcBalance(result.publicKey, USDC_MINT);
-      setBalances(sol, usdc);
+
+      // Fetch balances — non-fatal if it fails
+      console.log("[DEBUG] setWallet called, getting balances...");
+      try {
+        const sol = await getSolBalance(result.publicKey);
+        const usdc = await getUsdcBalance(result.publicKey, USDC_MINT);
+        setBalances(sol, usdc);
+        console.log("[DEBUG] balances set, sol:", sol, "usdc:", usdc);
+      } catch (balErr: any) {
+        console.warn("[DEBUG] balance fetch failed (non-fatal):", balErr?.message);
+      }
 
       // Authenticate with backend (sign message + verify)
       try {
+        console.log("[DEBUG] calling authenticateWithBackend...");
         await authenticateWithBackend(result.publicKey.toBase58());
-      } catch {
+        console.log("[DEBUG] authenticateWithBackend OK");
+      } catch (e) {
         // Backend auth is optional — on-chain features still work
-        console.warn("Backend auth failed, some features may be limited");
+        console.warn("Backend auth failed:", e);
       }
     } catch (error: any) {
+      console.error("[DEBUG] handleConnect error:", error);
       Alert.alert("Connection Failed", error.message || "Could not connect wallet");
     }
   };
