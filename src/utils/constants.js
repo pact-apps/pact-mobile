@@ -27,7 +27,10 @@ export const TREASURY_WALLET = new PublicKey(
 );
 
 // === BACKEND ===
-export const API_BASE_URL = "http://localhost:8080";
+// Saat testing di Android: ganti dengan ngrok URL
+// Contoh: "https://xxxx-xx-xx.ngrok-free.app"
+// Saat emulator: "http://10.0.2.2:8080"
+export const API_BASE_URL = "https://unimmersed-preabundantly-florentino.ngrok-free.dev";
 
 // === APP CONFIG ===
 export const SETTLEMENT_FEE_BPS = 200; // 2%
