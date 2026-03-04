@@ -1,0 +1,1007 @@
+{
+  "address": "6JTfaG74DZydUwHdQAo6P6frYAVhSitwTexomvTphbCs",
+  "metadata": {
+    "name": "pact_escrow",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Pact Escrow - Accountability Challenge Protocol"
+  },
+  "instructions": [
+    {
+      "name": "create_challenge",
+      "docs": [
+        "Buat challenge baru"
+      ],
+      "discriminator": [
+        170,
+        244,
+        47,
+        1,
+        1,
+        15,
+        173,
+        239
+      ],
+      "accounts": [
+        {
+          "name": "creator",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "challenge",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  104,
+                  97,
+                  108,
+                  108,
+                  101,
+                  110,
+                  103,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "challenge_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "docs": [
+            "The USDC vault for this challenge"
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "challenge"
+              }
+            ]
+          }
+        },
+        {
+          "name": "usdc_mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "challenge_id",
+          "type": "string"
+        },
+        {
+          "name": "stake_amount",
+          "type": "u64"
+        },
+        {
+          "name": "duration_seconds",
+          "type": "i64"
+        },
+        {
+          "name": "max_participants",
+          "type": "u8"
+        },
+        {
+          "name": "title",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "dispute",
+      "docs": [
+        "Dispute hasil peserta lain"
+      ],
+      "discriminator": [
+        216,
+        92,
+        128,
+        146,
+        202,
+        85,
+        135,
+        73
+      ],
+      "accounts": [
+        {
+          "name": "disputer",
+          "signer": true
+        },
+        {
+          "name": "challenge"
+        },
+        {
+          "name": "target_participant_state",
+          "docs": [
+            "State yang di-dispute"
+          ],
+          "writable": true
+        },
+        {
+          "name": "disputer_state",
+          "docs": [
+            "State disputer (harus deposited)"
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  114,
+                  116,
+                  105,
+                  99,
+                  105,
+                  112,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "challenge"
+              },
+              {
+                "kind": "account",
+                "path": "disputer"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "finalize",
+      "docs": [
+        "Finalize / Settlement — permissionless, siapa saja bisa trigger",
+        "",
+        "Logic:",
+        "1. Non-submitters → auto-fail",
+        "2. Submitted Success but disputed by >50% of others → fail",
+        "3. Rest → winner",
+        "4. Distribution:",
+        "- Has winners → 2% fee, rest split to winners",
+        "- All fail cycle 1 → enter AllFailVoting phase",
+        "- All fail cycle 2+ → refund with 2% fee",
+        "",
+        "remaining_accounts layout:",
+        "[ParticipantState_0, TokenAccount_0, ParticipantState_1, TokenAccount_1, ...]"
+      ],
+      "discriminator": [
+        171,
+        61,
+        218,
+        56,
+        127,
+        115,
+        12,
+        217
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "challenge",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "challenge"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "writable": true
+        },
+        {
+          "name": "treasury_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "join_challenge",
+      "docs": [
+        "Join challenge + deposit USDC"
+      ],
+      "discriminator": [
+        41,
+        104,
+        214,
+        73,
+        32,
+        168,
+        76,
+        79
+      ],
+      "accounts": [
+        {
+          "name": "participant",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "challenge",
+          "writable": true
+        },
+        {
+          "name": "participant_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  114,
+                  116,
+                  105,
+                  99,
+                  105,
+                  112,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "challenge"
+              },
+              {
+                "kind": "account",
+                "path": "participant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "participant_token_account",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "challenge"
+              }
+            ]
+          }
+        },
+        {
+          "name": "challenge_mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "start_challenge",
+      "docs": [
+        "Start challenge manually (oleh creator, min 2 participants)"
+      ],
+      "discriminator": [
+        241,
+        96,
+        253,
+        187,
+        177,
+        158,
+        16,
+        122
+      ],
+      "accounts": [
+        {
+          "name": "creator",
+          "signer": true
+        },
+        {
+          "name": "challenge",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "submit_result",
+      "docs": [
+        "Submit hasil (Success atau Fail) + proof hash"
+      ],
+      "discriminator": [
+        240,
+        42,
+        89,
+        180,
+        10,
+        239,
+        9,
+        214
+      ],
+      "accounts": [
+        {
+          "name": "participant",
+          "signer": true
+        },
+        {
+          "name": "challenge",
+          "writable": true
+        },
+        {
+          "name": "participant_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  114,
+                  116,
+                  105,
+                  99,
+                  105,
+                  112,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "challenge"
+              },
+              {
+                "kind": "account",
+                "path": "participant"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "success",
+          "type": "bool"
+        },
+        {
+          "name": "proof_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "vote_continue",
+      "docs": [
+        "All-fail cycle 1: vote untuk continue atau refund"
+      ],
+      "discriminator": [
+        111,
+        69,
+        177,
+        105,
+        51,
+        111,
+        3,
+        246
+      ],
+      "accounts": [
+        {
+          "name": "participant",
+          "signer": true
+        },
+        {
+          "name": "challenge"
+        },
+        {
+          "name": "participant_state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  114,
+                  116,
+                  105,
+                  99,
+                  105,
+                  112,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "challenge"
+              },
+              {
+                "kind": "account",
+                "path": "participant"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "wants_continue",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Challenge",
+      "discriminator": [
+        119,
+        250,
+        161,
+        121,
+        119,
+        81,
+        22,
+        208
+      ]
+    },
+    {
+      "name": "ParticipantState",
+      "discriminator": [
+        94,
+        173,
+        138,
+        206,
+        211,
+        209,
+        252,
+        75
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "ChallengeCreated",
+      "discriminator": [
+        166,
+        178,
+        174,
+        178,
+        11,
+        172,
+        98,
+        243
+      ]
+    },
+    {
+      "name": "ChallengeSettled",
+      "discriminator": [
+        96,
+        70,
+        232,
+        36,
+        45,
+        207,
+        169,
+        122
+      ]
+    },
+    {
+      "name": "DisputeFiled",
+      "discriminator": [
+        201,
+        119,
+        206,
+        64,
+        219,
+        44,
+        249,
+        153
+      ]
+    },
+    {
+      "name": "ParticipantJoined",
+      "discriminator": [
+        48,
+        182,
+        206,
+        15,
+        56,
+        181,
+        24,
+        253
+      ]
+    },
+    {
+      "name": "ResultSubmitted",
+      "discriminator": [
+        156,
+        153,
+        163,
+        89,
+        245,
+        144,
+        63,
+        94
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidStake",
+      "msg": "Stake amount must be > 0"
+    },
+    {
+      "code": 6001,
+      "name": "TooFewParticipants",
+      "msg": "Need at least 2 participants"
+    },
+    {
+      "code": 6002,
+      "name": "TooManyParticipants",
+      "msg": "Max 10 participants"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidDuration",
+      "msg": "Invalid challenge duration"
+    },
+    {
+      "code": 6004,
+      "name": "TitleTooLong",
+      "msg": "Title too long (max 64 chars)"
+    },
+    {
+      "code": 6005,
+      "name": "ChallengeNotOpen",
+      "msg": "Challenge is not open for joining"
+    },
+    {
+      "code": 6006,
+      "name": "ChallengeFull",
+      "msg": "Challenge is full"
+    },
+    {
+      "code": 6007,
+      "name": "NotCreator",
+      "msg": "Only the creator can perform this action"
+    },
+    {
+      "code": 6008,
+      "name": "NotInSubmissionWindow",
+      "msg": "Not in submission window"
+    },
+    {
+      "code": 6009,
+      "name": "ChallengeNotEnded",
+      "msg": "Challenge period has not ended yet"
+    },
+    {
+      "code": 6010,
+      "name": "SubmissionWindowClosed",
+      "msg": "Submission window has closed"
+    },
+    {
+      "code": 6011,
+      "name": "NotDeposited",
+      "msg": "Must deposit to participate"
+    },
+    {
+      "code": 6012,
+      "name": "AlreadySubmitted",
+      "msg": "Already submitted"
+    },
+    {
+      "code": 6013,
+      "name": "CannotDisputeSelf",
+      "msg": "Cannot dispute yourself"
+    },
+    {
+      "code": 6014,
+      "name": "CannotFinalize",
+      "msg": "Cannot finalize in current state"
+    },
+    {
+      "code": 6015,
+      "name": "SubmissionWindowNotClosed",
+      "msg": "Submission window has not closed yet"
+    },
+    {
+      "code": 6016,
+      "name": "NotInVotingPhase",
+      "msg": "Not in voting phase"
+    },
+    {
+      "code": 6017,
+      "name": "InvalidAccountCount",
+      "msg": "Invalid number of remaining accounts"
+    },
+    {
+      "code": 6018,
+      "name": "InvalidParticipant",
+      "msg": "Participant does not belong to this challenge"
+    }
+  ],
+  "types": [
+    {
+      "name": "Challenge",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "challenge_id",
+            "type": "string"
+          },
+          {
+            "name": "title",
+            "type": "string"
+          },
+          {
+            "name": "stake_amount",
+            "type": "u64"
+          },
+          {
+            "name": "max_participants",
+            "type": "u8"
+          },
+          {
+            "name": "participant_count",
+            "type": "u8"
+          },
+          {
+            "name": "deposit_count",
+            "type": "u8"
+          },
+          {
+            "name": "duration_seconds",
+            "type": "i64"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "deadline",
+            "type": "i64"
+          },
+          {
+            "name": "submission_deadline",
+            "type": "i64"
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "ChallengeStatus"
+              }
+            }
+          },
+          {
+            "name": "cycle",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChallengeCreated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "challenge_key",
+            "type": "pubkey"
+          },
+          {
+            "name": "creator",
+            "type": "pubkey"
+          },
+          {
+            "name": "stake_amount",
+            "type": "u64"
+          },
+          {
+            "name": "title",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChallengeSettled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "challenge_key",
+            "type": "pubkey"
+          },
+          {
+            "name": "winner_count",
+            "type": "u8"
+          },
+          {
+            "name": "total_pool",
+            "type": "u64"
+          },
+          {
+            "name": "fee",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ChallengeStatus",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Open"
+          },
+          {
+            "name": "Active"
+          },
+          {
+            "name": "Submission"
+          },
+          {
+            "name": "AllFailVoting"
+          },
+          {
+            "name": "Settled"
+          },
+          {
+            "name": "Cancelled"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DisputeFiled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "challenge_key",
+            "type": "pubkey"
+          },
+          {
+            "name": "disputer",
+            "type": "pubkey"
+          },
+          {
+            "name": "target",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_disputes",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ParticipantJoined",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "challenge_key",
+            "type": "pubkey"
+          },
+          {
+            "name": "participant",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_participants",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ParticipantState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "participant",
+            "type": "pubkey"
+          },
+          {
+            "name": "challenge",
+            "type": "pubkey"
+          },
+          {
+            "name": "deposited",
+            "type": "bool"
+          },
+          {
+            "name": "submitted",
+            "type": "bool"
+          },
+          {
+            "name": "submission_result",
+            "type": {
+              "defined": {
+                "name": "SubmissionResult"
+              }
+            }
+          },
+          {
+            "name": "proof_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "disputed",
+            "type": "bool"
+          },
+          {
+            "name": "dispute_count",
+            "type": "u8"
+          },
+          {
+            "name": "is_winner",
+            "type": "bool"
+          },
+          {
+            "name": "vote_continue",
+            "type": {
+              "option": "bool"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResultSubmitted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "challenge_key",
+            "type": "pubkey"
+          },
+          {
+            "name": "participant",
+            "type": "pubkey"
+          },
+          {
+            "name": "success",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SubmissionResult",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "None"
+          },
+          {
+            "name": "Success"
+          },
+          {
+            "name": "Fail"
+          }
+        ]
+      }
+    }
+  ]
+}
