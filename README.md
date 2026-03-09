@@ -185,17 +185,6 @@ If judges are using a physical Android device instead of an emulator:
 2. Point `EXPO_PUBLIC_API_BASE_URL` to that HTTPS URL.
 3. Install Phantom on the device and switch it to devnet.
 
-## Demo Script
-
-Recommended short demo:
-
-1. Connect wallet
-2. Show wallet balance and active profile state
-3. Create a challenge with devnet USDC
-4. Join or inspect an existing challenge
-5. Submit proof
-6. Show leaderboard / profile / challenge history
-
 ## Solana Notes
 
 - The app currently targets `devnet`
