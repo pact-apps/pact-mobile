@@ -1,12 +1,35 @@
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { SOLANA_RPC_URL } from "../utils/constants";
+import {
+  SOLANA_EXTRA_WRITE_RPC_URLS,
+  SOLANA_FALLBACK_WRITE_RPC_URL,
+  SOLANA_READ_RPC_URL,
+  SOLANA_WRITE_RPC_URL,
+} from "../utils/constants";
 
-// Satu connection instance untuk seluruh app
-export const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+export const readConnection = new Connection(SOLANA_READ_RPC_URL, "confirmed");
+export const writeConnection = new Connection(SOLANA_WRITE_RPC_URL, "confirmed");
+export const fallbackWriteConnection = new Connection(
+  SOLANA_FALLBACK_WRITE_RPC_URL,
+  "confirmed"
+);
+export const extraWriteConnections = SOLANA_EXTRA_WRITE_RPC_URLS.map(
+  (url: string) => new Connection(url, "confirmed")
+);
+export const writeConnections = [
+  writeConnection,
+  fallbackWriteConnection,
+  ...extraWriteConnections,
+].filter(
+  (connection, index, all) =>
+    all.findIndex((item) => item.rpcEndpoint === connection.rpcEndpoint) === index
+);
+
+// Keep the existing export name for read paths across the app.
+export const connection = readConnection;
 
 // Helper: cek saldo SOL
 export async function getSolBalance(publicKey: PublicKey): Promise<number> {
-  const balance = await connection.getBalance(publicKey);
+  const balance = await readConnection.getBalance(publicKey);
   return balance / LAMPORTS_PER_SOL;
 }
 
@@ -16,7 +39,7 @@ export async function getUsdcBalance(
   usdcMint: PublicKey
 ): Promise<number> {
   try {
-    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+    const tokenAccounts = await readConnection.getParsedTokenAccountsByOwner(
       publicKey,
       { mint: usdcMint }
     );
@@ -36,10 +59,10 @@ export function subscribeToAccount(
   publicKey: PublicKey,
   callback: (accountInfo: any) => void
 ): number {
-  return connection.onAccountChange(publicKey, callback, "confirmed");
+  return readConnection.onAccountChange(publicKey, callback, "confirmed");
 }
 
 // Helper: unsubscribe
 export function unsubscribeFromAccount(subscriptionId: number) {
-  connection.removeAccountChangeListener(subscriptionId);
+  readConnection.removeAccountChangeListener(subscriptionId);
 }

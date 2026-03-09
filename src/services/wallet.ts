@@ -2,8 +2,8 @@ import {
   transact,
   Web3MobileWallet,
 } from "@solana-mobile/mobile-wallet-adapter-protocol-web3js";
-import { PublicKey, Transaction } from "@solana/web3.js";
-import { connection } from "./solana";
+import { Connection, PublicKey, Transaction } from "@solana/web3.js";
+import { writeConnections } from "./solana";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // ==========================================
@@ -13,6 +13,157 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const AUTH_TOKEN_KEY = "pact_mwa_auth_token";
 const WALLET_KEY = "pact_mwa_wallet";
+
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "Unknown error";
+}
+
+function wrapTxError(stage: string, error: unknown): never {
+  const message = getErrorMessage(error);
+  const lower = message.toLowerCase();
+
+  if (
+    lower.includes("declined") ||
+    lower.includes("rejected") ||
+    lower.includes("cancelled") ||
+    lower.includes("canceled")
+  ) {
+    throw new Error("Wallet approval was cancelled.");
+  }
+
+  if (lower.includes("network request failed")) {
+    throw new Error(`${stage} failed because the network request did not complete.`);
+  }
+
+  throw new Error(`${stage} failed: ${message}`);
+}
+
+function getConnectionLabel(connection: Connection) {
+  return connection.rpcEndpoint;
+}
+
+function isNetworkSendError(error: unknown) {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("network request failed") ||
+    message.includes("fetch failed") ||
+    message.includes("failed to fetch") ||
+    message.includes("timeout") ||
+    message.includes("timed out")
+  );
+}
+
+async function getLatestBlockhashWithFallback() {
+  let lastError: unknown = null;
+
+  for (const connection of writeConnections) {
+    try {
+      const latest = await connection.getLatestBlockhash();
+      console.log("[DEBUG] signAndSend: using blockhash from", getConnectionLabel(connection));
+      return { connection, ...latest };
+    } catch (error) {
+      lastError = error;
+      if (!isNetworkSendError(error)) {
+        throw error;
+      }
+      console.warn(
+        "[DEBUG] signAndSend: blockhash fetch failed on",
+        getConnectionLabel(connection),
+        getErrorMessage(error)
+      );
+    }
+  }
+
+  throw lastError ?? new Error("No write RPC endpoints were reachable.");
+}
+
+async function confirmSignatureAcrossConnections(
+  signature: string,
+  blockhash: string,
+  lastValidBlockHeight: number
+) {
+  let lastError: unknown = null;
+
+  for (const connection of writeConnections) {
+    try {
+      await connection.confirmTransaction(
+        {
+          signature,
+          blockhash,
+          lastValidBlockHeight,
+        },
+        "confirmed"
+      );
+      console.log("[DEBUG] signAndSend: confirmed via", getConnectionLabel(connection));
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isNetworkSendError(error)) {
+        throw error;
+      }
+      console.warn(
+        "[DEBUG] signAndSend: confirm failed on",
+        getConnectionLabel(connection),
+        getErrorMessage(error)
+      );
+    }
+  }
+
+  throw lastError ?? new Error("Confirmation did not complete on any write RPC endpoint.");
+}
+
+async function sendAndConfirmWithFallback(
+  rawTx: Uint8Array,
+  blockhash: string,
+  lastValidBlockHeight: number
+) {
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    for (const connection of writeConnections) {
+      try {
+        console.log(
+          "[DEBUG] signAndSend: sending attempt",
+          attempt,
+          "via",
+          getConnectionLabel(connection)
+        );
+        const signature = await connection.sendRawTransaction(rawTx, {
+          maxRetries: 3,
+          preflightCommitment: "confirmed",
+        });
+        console.log(
+          "[DEBUG] signAndSend: send succeeded via",
+          getConnectionLabel(connection),
+          signature
+        );
+        await confirmSignatureAcrossConnections(signature, blockhash, lastValidBlockHeight);
+        return signature;
+      } catch (error) {
+        lastError = error;
+        if (!isNetworkSendError(error)) {
+          throw error;
+        }
+        console.warn(
+          "[DEBUG] signAndSend: send failed on",
+          getConnectionLabel(connection),
+          getErrorMessage(error)
+        );
+      }
+    }
+  }
+
+  const endpoints = writeConnections.map((connection) => getConnectionLabel(connection)).join(", ");
+  throw new Error(
+    `All write RPC endpoints failed (${endpoints}). Last error: ${getErrorMessage(lastError)}`
+  );
+}
 
 export const APP_IDENTITY = {
   name: "Pact",
@@ -105,8 +256,15 @@ export async function signAndSendTransaction(
   transaction: Transaction
 ): Promise<string> {
   console.log("[DEBUG] signAndSend: getting blockhash...");
-  const { blockhash, lastValidBlockHeight } =
-    await connection.getLatestBlockhash();
+  let blockhash: string;
+  let lastValidBlockHeight: number;
+  try {
+    const latest = await getLatestBlockhashWithFallback();
+    blockhash = latest.blockhash;
+    lastValidBlockHeight = latest.lastValidBlockHeight;
+  } catch (error) {
+    wrapTxError("Fetching recent blockhash", error);
+  }
   console.log("[DEBUG] signAndSend: blockhash OK:", blockhash.slice(0, 8));
   transaction.recentBlockhash = blockhash;
 
@@ -116,42 +274,49 @@ export async function signAndSendTransaction(
 
   // Only sign inside transact — keep RPC calls outside MWA session
   console.log("[DEBUG] signAndSend: opening MWA to sign...");
-  const signedTx = await transact(async (wallet: Web3MobileWallet) => {
-    // Reauthorize session
-    const cachedToken = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
-    if (cachedToken) {
-      const authResult = await wallet.reauthorize({
-        identity: APP_IDENTITY,
-        auth_token: cachedToken,
-      });
-      await AsyncStorage.setItem(AUTH_TOKEN_KEY, authResult.auth_token);
-    } else {
-      const authResult = await wallet.authorize({
-        identity: APP_IDENTITY,
-        cluster: "devnet",
-      });
-      await AsyncStorage.setItem(AUTH_TOKEN_KEY, authResult.auth_token);
-    }
+  let signedTx: Transaction;
+  try {
+    signedTx = await transact(async (wallet: Web3MobileWallet) => {
+      // Reauthorize session
+      const cachedToken = await AsyncStorage.getItem(AUTH_TOKEN_KEY);
+      if (cachedToken) {
+        const authResult = await wallet.reauthorize({
+          identity: APP_IDENTITY,
+          auth_token: cachedToken,
+        });
+        await AsyncStorage.setItem(AUTH_TOKEN_KEY, authResult.auth_token);
+      } else {
+        const authResult = await wallet.authorize({
+          identity: APP_IDENTITY,
+          cluster: "devnet",
+        });
+        await AsyncStorage.setItem(AUTH_TOKEN_KEY, authResult.auth_token);
+      }
 
-    // Only sign — don't send inside MWA session
-    const signedTransactions = await wallet.signTransactions({
-      transactions: [transaction],
+      const signedTransactions = await wallet.signTransactions({
+        transactions: [transaction],
+      });
+      console.log("[DEBUG] signAndSend: transaction signed OK");
+      return signedTransactions[0];
     });
-    console.log("[DEBUG] signAndSend: transaction signed OK");
-    return signedTransactions[0];
-  });
+  } catch (error) {
+    wrapTxError("Wallet approval", error);
+  }
 
   // Send the signed transaction outside MWA session
   console.log("[DEBUG] signAndSend: sending raw transaction...");
   const rawTx = signedTx.serialize();
-  const signature = await connection.sendRawTransaction(rawTx);
+  let signature: string;
+  try {
+    signature = await sendAndConfirmWithFallback(
+      rawTx,
+      blockhash,
+      lastValidBlockHeight
+    );
+  } catch (error) {
+    wrapTxError("Sending transaction", error);
+  }
   console.log("[DEBUG] signAndSend: sent! signature:", signature);
-
-  await connection.confirmTransaction({
-    signature,
-    blockhash,
-    lastValidBlockHeight,
-  });
   console.log("[DEBUG] signAndSend: confirmed!");
 
   return signature;

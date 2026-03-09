@@ -11,6 +11,7 @@ import idl from "../../idl/pact_escrow.json";
 // ==========================================
 
 const CHALLENGE_DISCRIMINATOR = [119, 250, 161, 121, 119, 81, 22, 208];
+const PARTICIPANT_STATE_DISCRIMINATOR = [94, 173, 138, 206, 211, 209, 252, 75];
 
 const STATUS_VARIANTS = ["open", "active", "submission", "allFailVoting", "settled", "cancelled"];
 
@@ -173,6 +174,100 @@ export function getParticipantPDA(
   );
 }
 
+function decodeParticipantState(data: Uint8Array) {
+  let offset = 8; // skip discriminator
+
+  const participant = new PublicKey(data.slice(offset, offset + 32));
+  offset += 32;
+
+  const challenge = new PublicKey(data.slice(offset, offset + 32));
+  offset += 32;
+
+  const deposited = Boolean(data[offset++]);
+  const submitted = Boolean(data[offset++]);
+
+  const submissionResultVariant = data[offset++];
+  const submissionResultKey =
+    submissionResultVariant === 0
+      ? "pending"
+      : submissionResultVariant === 1
+        ? "success"
+        : "fail";
+  const submissionResult: Record<string, object> = {
+    [submissionResultKey]: {},
+  };
+
+  const proofHash = Array.from(data.slice(offset, offset + 32));
+  offset += 32;
+
+  const disputed = Boolean(data[offset++]);
+  const disputeCount = data[offset++];
+  const isWinner = Boolean(data[offset++]);
+  const boostEnabled = Boolean(data[offset++]);
+
+  const voteContinueFlag = data[offset++];
+  const voteContinue =
+    voteContinueFlag === 0 ? null : Boolean(data[offset++]);
+
+  const bump = data[offset++];
+
+  return {
+    participant,
+    challenge,
+    deposited,
+    submitted,
+    submissionResult,
+    proofHash,
+    disputed,
+    disputeCount,
+    isWinner,
+    boostEnabled,
+    voteContinue,
+    bump,
+  };
+}
+
+export function getCommitmentProfilePDA(userKey: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("commitment_profile"), userKey.toBuffer()],
+    PROGRAM_ID
+  );
+}
+
+export function getSkrLockPDA(userKey: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("skr_lock"), userKey.toBuffer()],
+    PROGRAM_ID
+  );
+}
+
+export function getSkrVaultPDA(userKey: PublicKey): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("skr_vault"), userKey.toBuffer()],
+    PROGRAM_ID
+  );
+}
+
+export function getPlatformConfigPDA(): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([Buffer.from("platform_config")], PROGRAM_ID);
+}
+
+export function getDisputeReceiptPDA(
+  challengeKey: PublicKey,
+  disputerKey: PublicKey,
+  targetParticipantKey: PublicKey
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("dispute"),
+      challengeKey.toBuffer(),
+      disputerKey.toBuffer(),
+      targetParticipantKey.toBuffer(),
+    ],
+    PROGRAM_ID
+  );
+}
+
 // ==========================================
 // FETCH DATA (READ from chain)
 // ==========================================
@@ -224,6 +319,31 @@ export async function fetchAllChallenges() {
   }
 }
 
+export async function fetchChallengesForWallet(walletKey: PublicKey) {
+  const [allChallenges, participantStates] = await Promise.all([
+    fetchAllChallenges(),
+    fetchAllParticipantStates(),
+  ]);
+
+  const challengeKeys = new Set<string>();
+
+  for (const challenge of allChallenges) {
+    if (challenge.account.creator.toBase58() === walletKey.toBase58()) {
+      challengeKeys.add(challenge.publicKey.toBase58());
+    }
+  }
+
+  for (const participantState of participantStates) {
+    if (participantState.account.participant.toBase58() === walletKey.toBase58()) {
+      challengeKeys.add(participantState.account.challenge.toBase58());
+    }
+  }
+
+  return allChallenges.filter((challenge) =>
+    challengeKeys.has(challenge.publicKey.toBase58())
+  );
+}
+
 export async function fetchChallengesByStatus(status: string) {
   const program = getProgram();
   const allChallenges = await accounts(program).challenge.all();
@@ -231,6 +351,51 @@ export async function fetchChallengesByStatus(status: string) {
   return allChallenges.filter(
     (c: any) => Object.keys(c.account.status)[0] === status.toLowerCase()
   );
+}
+
+export async function fetchPlatformConfig() {
+  const program = getProgram();
+  const [platformConfigPDA] = getPlatformConfigPDA();
+
+  try {
+    const config = await accounts(program).platformConfig.fetch(platformConfigPDA);
+    return {
+      publicKey: platformConfigPDA,
+      account: config,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchSkrLockAccount(userKey: PublicKey) {
+  const program = getProgram();
+  const [skrLockPDA] = getSkrLockPDA(userKey);
+
+  try {
+    const account = await accounts(program).skrLockAccount.fetch(skrLockPDA);
+    return {
+      publicKey: skrLockPDA,
+      account,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchCommitmentProfile(userKey: PublicKey) {
+  const program = getProgram();
+  const [commitmentProfilePDA] = getCommitmentProfilePDA(userKey);
+
+  try {
+    const account = await accounts(program).commitmentProfile.fetch(commitmentProfilePDA);
+    return {
+      publicKey: commitmentProfilePDA,
+      account,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchParticipantState(
@@ -259,19 +424,41 @@ export async function fetchVaultBalance(challengeKey: PublicKey) {
 }
 
 export async function fetchAllParticipants(challengeKey: PublicKey) {
-  const program = getProgram();
-
   try {
-    const allParticipants = await accounts(program).participantState.all();
+    const allParticipants = await fetchAllParticipantStates();
     return allParticipants
-      .filter(
-        (item: any) =>
-          item.account.challenge.toBase58() === challengeKey.toBase58()
-      )
-      .map((item: any) => ({
+      .filter((item) => item.account.challenge.toBase58() === challengeKey.toBase58())
+      .map((item) => ({
         publicKey: item.publicKey,
         account: item.account,
       }));
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchAllParticipantStates() {
+  try {
+    const rawAccounts = await connection.getProgramAccounts(PROGRAM_ID);
+
+    const participantStates = [];
+    for (const item of rawAccounts) {
+      const data = new Uint8Array(item.account.data);
+      if (!matchesDiscriminator(data, PARTICIPANT_STATE_DISCRIMINATOR)) continue;
+
+      try {
+        const decoded = decodeParticipantState(data);
+        participantStates.push({ publicKey: item.pubkey, account: decoded });
+      } catch (e: any) {
+        console.warn(
+          "[DEBUG] decode participant state failed:",
+          item.pubkey.toBase58(),
+          e?.message
+        );
+      }
+    }
+
+    return participantStates;
   } catch {
     return [];
   }

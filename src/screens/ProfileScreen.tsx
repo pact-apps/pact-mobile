@@ -1,22 +1,33 @@
 import React, { useEffect, useState } from "react";
 import {
-  View,
+  Alert,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
   Text,
   TouchableOpacity,
-  StyleSheet,
-  Alert,
-  ScrollView,
+  View,
 } from "react-native";
+import { CommonActions, useNavigation } from "@react-navigation/native";
+import { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import AmbientBackground from "../components/ui/AmbientBackground";
+import PactButton from "../components/ui/PactButton";
+import HowPactWorksModal from "../components/ui/HowPactWorksModal";
+import { colors } from "../theme/colors";
 import { useAppStore } from "../store/useAppStore";
 import { openAccount, openProgram } from "../utils/explorer";
 import { authorizeWallet, deauthorizeWallet } from "../services/wallet";
 import { getSolBalance, getUsdcBalance } from "../services/solana";
-import { USDC_MINT } from "../utils/constants";
+import { SKR_BASE_UNITS, SOLANA_NETWORK, USDC_MINT } from "../utils/constants";
 import { pactApi } from "../services/apiInstance";
 import { clearBackendAuth } from "../services/backendAuth";
 import type { ScoreResponse } from "../services/pactApi";
+import { fetchAllChallenges, fetchCommitmentProfile, fetchSkrLockAccount } from "../services/anchor";
+import type { RootStackParamList } from "../navigation/AppNavigator";
+import { formatSol, formatUsdc } from "../utils/format";
 
 export default function ProfileScreen() {
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const {
     publicKey,
     connected,
@@ -28,25 +39,55 @@ export default function ProfileScreen() {
   } = useAppStore();
 
   const [score, setScore] = useState<ScoreResponse | null>(null);
+  const [createdChallenges, setCreatedChallenges] = useState<number | null>(null);
+  const [activeCreatedChallenges, setActiveCreatedChallenges] = useState<number | null>(null);
+  const [lockedSkr, setLockedSkr] = useState<number | null>(null);
+  const [commitmentScore, setCommitmentScore] = useState<number>(100);
+  const [activeChallengeCount, setActiveChallengeCount] = useState<number | null>(null);
+  const [showHowItWorks, setShowHowItWorks] = useState(false);
 
-  // Refresh balances and score
   useEffect(() => {
-    if (connected && publicKey) {
-      (async () => {
-        const sol = await getSolBalance(publicKey);
-        const usdc = await getUsdcBalance(publicKey, USDC_MINT);
-        setBalances(sol, usdc);
+    if (!connected || !publicKey) return;
 
-        // Fetch commitment score from backend
-        try {
-          const s = await pactApi.scores.get(publicKey.toBase58());
-          setScore(s);
-        } catch {
-          // Backend may not be available
-        }
-      })();
-    }
-  }, [connected, publicKey]);
+    (async () => {
+      const [sol, usdc, skrLock, commitmentProfile] = await Promise.all([
+        getSolBalance(publicKey),
+        getUsdcBalance(publicKey, USDC_MINT),
+        fetchSkrLockAccount(publicKey),
+        fetchCommitmentProfile(publicKey),
+      ]);
+      setBalances(sol, usdc);
+      setLockedSkr(skrLock ? skrLock.account.amountLocked.toNumber() / SKR_BASE_UNITS : 0);
+      setCommitmentScore(commitmentProfile ? Number(commitmentProfile.account.commitmentScore) : 100);
+      setActiveChallengeCount(
+        commitmentProfile ? commitmentProfile.account.activeChallengeCount : null
+      );
+
+      try {
+        const s = await pactApi.scores.get(publicKey.toBase58());
+        setScore(s);
+      } catch {
+        // Backend may not be available
+      }
+
+      try {
+        const allChallenges = await fetchAllChallenges();
+        const mine = allChallenges.filter(
+          (challenge) => challenge.account.creator.toBase58() === publicKey.toBase58()
+        );
+        const activeMine = mine.filter((challenge) => {
+          const status = Object.keys(challenge.account.status)[0];
+          return status === "open" || status === "active" || status === "submission";
+        });
+
+        setCreatedChallenges(mine.length);
+        setActiveCreatedChallenges(activeMine.length);
+      } catch {
+        setCreatedChallenges(null);
+        setActiveCreatedChallenges(null);
+      }
+    })();
+  }, [connected, publicKey, setBalances]);
 
   const handleConnect = async () => {
     try {
@@ -64,211 +105,330 @@ export default function ProfileScreen() {
     await deauthorizeWallet();
     await clearBackendAuth();
     setScore(null);
+    setCreatedChallenges(null);
+    setActiveCreatedChallenges(null);
+    setLockedSkr(null);
+    setCommitmentScore(100);
+    setActiveChallengeCount(null);
     disconnect();
+    navigation.dispatch(
+      CommonActions.reset({
+        index: 0,
+        routes: [{ name: "ConnectWallet" }],
+      })
+    );
   };
 
-  return (
-    <ScrollView style={styles.container}>
-      <Text style={styles.header}>Profile</Text>
+  const completed = score?.challenges_completed ?? 0;
+  const failed = score?.challenges_failed ?? 0;
+  const totalDecided = completed + failed;
+  const completionRate =
+    totalDecided > 0 ? `${Math.round((completed / totalDecided) * 100)}%` : "-";
 
-      {connected && publicKey ? (
-        <>
-          <View style={styles.infoCard}>
-            <Text style={styles.label}>Wallet Address</Text>
-            <Text style={styles.value}>{publicKey.toBase58()}</Text>
-          </View>
-
-          <View style={styles.row}>
-            <View style={[styles.infoCard, { flex: 1, marginRight: 8 }]}>
-              <Text style={styles.label}>SOL</Text>
-              <Text style={styles.value}>{solBalance.toFixed(4)}</Text>
-            </View>
-            <View style={[styles.infoCard, { flex: 1 }]}>
-              <Text style={styles.label}>USDC</Text>
-              <Text style={styles.value}>{usdcBalance.toFixed(2)}</Text>
-            </View>
-          </View>
-
-          {/* Commitment Score */}
-          {score && (
-            <View style={styles.scoreSection}>
-              <Text style={styles.sectionTitle}>Commitment Score</Text>
-
-              <View style={styles.scoreBigCard}>
-                <Text style={styles.scoreNumber}>{score.score}</Text>
-                {score.rank && (
-                  <Text style={styles.scoreRank}>Rank #{score.rank}</Text>
-                )}
-              </View>
-
-              <View style={styles.row}>
-                <View style={[styles.statCard, { marginRight: 6 }]}>
-                  <Text style={styles.statValue}>{score.challenges_completed}</Text>
-                  <Text style={styles.statLabel}>Completed</Text>
-                </View>
-                <View style={[styles.statCard, { marginHorizontal: 3 }]}>
-                  <Text style={styles.statValue}>{score.challenges_failed}</Text>
-                  <Text style={styles.statLabel}>Failed</Text>
-                </View>
-                <View style={[styles.statCard, { marginLeft: 6 }]}>
-                  <Text style={styles.statValue}>{score.streak_current}</Text>
-                  <Text style={styles.statLabel}>Streak</Text>
-                </View>
-              </View>
-
-              <View style={styles.row}>
-                <View style={[styles.statCard, { marginRight: 6 }]}>
-                  <Text style={[styles.statValue, { color: "#4ade80" }]}>
-                    {score.total_earned_usdc.toFixed(2)}
-                  </Text>
-                  <Text style={styles.statLabel}>Earned (USDC)</Text>
-                </View>
-                <View style={[styles.statCard, { marginLeft: 6 }]}>
-                  <Text style={styles.statValue}>
-                    {score.total_staked_usdc.toFixed(2)}
-                  </Text>
-                  <Text style={styles.statLabel}>Staked (USDC)</Text>
-                </View>
-              </View>
-
-              {score.streak_best > 0 && (
-                <View style={styles.infoCard}>
-                  <Text style={styles.label}>Best Streak</Text>
-                  <Text style={styles.value}>{score.streak_best}</Text>
-                </View>
-              )}
-            </View>
-          )}
-
-          <TouchableOpacity
-            style={styles.explorerBtn}
-            onPress={() => openAccount(publicKey.toBase58())}
-          >
-            <Text style={styles.explorerBtnText}>
-              View Wallet on Explorer
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.explorerBtn}
-            onPress={() => openProgram()}
-          >
-            <Text style={styles.explorerBtnText}>
-              View Pact Program on Explorer
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.disconnectBtn}
-            onPress={handleDisconnect}
-          >
-            <Text style={styles.disconnectBtnText}>Disconnect Wallet</Text>
-          </TouchableOpacity>
-
-          <View style={{ height: 40 }} />
-        </>
-      ) : (
-        <View style={styles.notConnectedSection}>
-          <Text style={styles.notConnected}>Wallet not connected</Text>
-          <TouchableOpacity style={styles.connectBtn} onPress={handleConnect}>
-            <Text style={styles.connectBtnText}>Connect Wallet</Text>
-          </TouchableOpacity>
+  if (!connected || !publicKey) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <AmbientBackground variant="blue" />
+        <View style={styles.emptyWrap}>
+          <Text style={styles.emptyTitle}>Profile</Text>
+          <Text style={styles.emptyText}>Connect wallet to see balance, stats, and commitment score.</Text>
+          <PactButton label="Connect Wallet" onPress={handleConnect} style={{ marginTop: 14, width: "100%" }} />
         </View>
-      )}
-    </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <AmbientBackground variant="blue" />
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <Text style={styles.overline}>PROFILE</Text>
+        <Text style={styles.heading}>Account Overview</Text>
+
+        <View style={styles.card}>
+          <View style={styles.inlineRow}>
+            <Text style={styles.cardLabel}>Wallet Identity</Text>
+            <Text style={styles.networkTag}>{String(SOLANA_NETWORK).toUpperCase()}</Text>
+          </View>
+          <Text style={styles.address}>{publicKey.toBase58()}</Text>
+        </View>
+
+        <SectionTitle title="Financial Snapshot" />
+        <View style={styles.row}>
+          <View style={[styles.card, styles.flex]}>
+            <Text style={styles.cardLabel}>SOL</Text>
+            <Text style={styles.value}>{formatSol(solBalance)}</Text>
+          </View>
+          <View style={[styles.card, styles.flex]}>
+            <Text style={styles.cardLabel}>USDC</Text>
+            <Text style={styles.value}>{formatUsdc(usdcBalance)}</Text>
+          </View>
+        </View>
+        <View style={styles.card}>
+          <InfoRow label="Locked SKR" value={lockedSkr !== null ? `${formatUsdc(lockedSkr)} SKR` : "-"} />
+          <PactButton
+            label="Manage SKR Boost"
+            variant="secondary"
+            onPress={() => navigation.navigate("StakeSkr")}
+            style={{ marginTop: 10 }}
+          />
+        </View>
+
+        <SectionTitle title="Accountability Stats" />
+        <View style={styles.scoreCard}>
+          <Text style={styles.cardLabel}>Commitment Score</Text>
+          <Text style={styles.scoreValue}>{commitmentScore}</Text>
+          {score?.rank && <Text style={styles.rank}>Rank #{score.rank}</Text>}
+
+          <View style={styles.statsRow}>
+            <MiniStat label="Completed" value={String(completed)} />
+            <MiniStat label="Failed" value={String(failed)} />
+            <MiniStat
+              label="Active Pacts"
+              value={activeChallengeCount !== null ? String(activeChallengeCount) : "-"}
+            />
+          </View>
+        </View>
+
+        <SectionTitle title="Challenge Activity Summary" />
+        <View style={styles.card}>
+          <InfoRow
+            label="Created Challenges"
+            value={createdChallenges !== null ? String(createdChallenges) : "-"}
+          />
+          <InfoRow
+            label="Active Created"
+            value={activeCreatedChallenges !== null ? String(activeCreatedChallenges) : "-"}
+          />
+          <InfoRow label="Completed Challenges" value={String(completed)} />
+          <InfoRow label="Failed Challenges" value={String(failed)} />
+        </View>
+
+        <SectionTitle title="Reputation Signals" />
+        <View style={styles.card}>
+          <InfoRow label="Completion Rate" value={completionRate} />
+          <InfoRow label="Current Streak" value={String(score?.streak_current ?? 0)} />
+          <InfoRow label="Best Streak" value={String(score?.streak_best ?? 0)} />
+        </View>
+
+        <SectionTitle title="Pact Totals" />
+        <View style={styles.card}>
+          <InfoRow
+            label="Total Staked (USDC)"
+            value={score ? formatUsdc(score.total_staked_usdc) : "-"}
+          />
+          <InfoRow
+            label="Total Earned (USDC)"
+            value={score ? formatUsdc(score.total_earned_usdc) : "-"}
+          />
+        </View>
+
+        <SectionTitle title="Actions" />
+
+        <TouchableOpacity style={styles.linkBtn} onPress={() => openAccount(publicKey.toBase58())}>
+          <Text style={styles.linkText}>View Wallet on Explorer</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.linkBtn} onPress={() => openProgram()}>
+          <Text style={styles.linkText}>View Pact Program</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.linkBtn} onPress={() => setShowHowItWorks(true)}>
+          <Text style={styles.linkText}>How Pact Works</Text>
+        </TouchableOpacity>
+
+        <PactButton label="Disconnect Wallet" variant="danger" onPress={handleDisconnect} style={{ marginTop: 8 }} />
+      </ScrollView>
+
+      <HowPactWorksModal
+        visible={showHowItWorks}
+        onClose={() => setShowHowItWorks(false)}
+      />
+    </SafeAreaView>
+  );
+}
+
+function SectionTitle({ title }: { title: string }) {
+  return <Text style={styles.sectionTitle}>{title}</Text>;
+}
+
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.miniStat}>
+      <Text style={styles.miniValue}>{value}</Text>
+      <Text style={styles.miniLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.infoRow}>
+      <Text style={styles.infoLabel}>{label}</Text>
+      <Text style={styles.infoValue}>{value}</Text>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: "#0a0a0a" },
-  header: {
-    color: "#fff",
-    fontSize: 28,
-    fontWeight: "800",
-    marginBottom: 24,
-  },
-  infoCard: {
-    backgroundColor: "#1a1a2e",
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-  },
-  label: { color: "#9ca3af", fontSize: 12, marginBottom: 4 },
-  value: { color: "#fff", fontSize: 16, fontFamily: "monospace" },
-  row: { flexDirection: "row", marginBottom: 8 },
-  scoreSection: { marginBottom: 16 },
-  sectionTitle: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "700",
-    marginBottom: 12,
-  },
-  scoreBigCard: {
-    backgroundColor: "#1a1a2e",
-    borderRadius: 16,
-    padding: 24,
-    alignItems: "center",
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: "#7c3aed",
-  },
-  scoreNumber: {
-    color: "#7c3aed",
-    fontSize: 48,
-    fontWeight: "800",
-  },
-  scoreRank: {
-    color: "#9ca3af",
-    fontSize: 14,
-    marginTop: 4,
-  },
-  statCard: {
+  container: {
     flex: 1,
-    backgroundColor: "#1a1a2e",
-    borderRadius: 12,
+    backgroundColor: colors.bg,
+  },
+  content: {
+    paddingHorizontal: 16,
+    paddingBottom: 24,
+    gap: 10,
+  },
+  overline: {
+    marginTop: 6,
+    color: colors.textFaint,
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+  },
+  heading: {
+    color: colors.text,
+    fontSize: 30,
+    fontWeight: "800",
+    marginBottom: 4,
+  },
+  sectionTitle: {
+    marginTop: 2,
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  card: {
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
     padding: 14,
+  },
+  cardLabel: {
+    color: colors.textSoft,
+    fontSize: 12,
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
+    fontWeight: "700",
+    marginBottom: 4,
+  },
+  inlineRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  networkTag: {
+    color: colors.primary,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  address: {
+    color: colors.text,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  row: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  flex: {
+    flex: 1,
+  },
+  value: {
+    color: colors.text,
+    fontSize: 22,
+    fontWeight: "800",
+  },
+  scoreCard: {
+    backgroundColor: "#10253B",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#2A507A",
+    padding: 14,
+    marginTop: 2,
+  },
+  scoreValue: {
+    color: colors.text,
+    fontSize: 46,
+    fontWeight: "800",
+    lineHeight: 52,
+  },
+  rank: {
+    color: colors.textFaint,
+    fontSize: 13,
+  },
+  statsRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 12,
+  },
+  miniStat: {
+    flex: 1,
+    backgroundColor: "#16314D",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#2F5B88",
+    paddingVertical: 10,
+    paddingHorizontal: 10,
     alignItems: "center",
   },
-  statValue: {
-    color: "#fff",
+  miniValue: {
+    color: colors.text,
     fontSize: 20,
     fontWeight: "700",
   },
-  statLabel: {
-    color: "#6b7280",
+  miniLabel: {
+    color: colors.textSoft,
     fontSize: 11,
-    marginTop: 4,
+    marginTop: 3,
   },
-  explorerBtn: {
-    backgroundColor: "#1e293b",
-    padding: 14,
-    borderRadius: 12,
+  infoRow: {
+    flexDirection: "row",
     alignItems: "center",
-    marginBottom: 8,
+    justifyContent: "space-between",
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    paddingVertical: 9,
+  },
+  infoLabel: {
+    color: colors.textSoft,
+    fontSize: 13,
+    flex: 1,
+  },
+  infoValue: {
+    color: colors.text,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  linkBtn: {
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: "#334155",
+    borderColor: colors.border,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
   },
-  explorerBtnText: { color: "#7c3aed", fontSize: 14, fontWeight: "600" },
-  disconnectBtn: {
-    backgroundColor: "#dc2626",
-    padding: 14,
-    borderRadius: 12,
-    alignItems: "center",
-    marginTop: 16,
+  linkText: {
+    color: colors.primary,
+    fontSize: 14,
+    fontWeight: "700",
   },
-  disconnectBtnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
-  notConnectedSection: { alignItems: "center", marginTop: 40 },
-  notConnected: {
-    color: "#6b7280",
-    fontSize: 16,
-    textAlign: "center",
-    marginBottom: 16,
+  emptyWrap: {
+    flex: 1,
+    paddingHorizontal: 20,
+    justifyContent: "center",
+    alignItems: "flex-start",
   },
-  connectBtn: {
-    backgroundColor: "#7c3aed",
-    padding: 14,
-    borderRadius: 12,
-    paddingHorizontal: 32,
+  emptyTitle: {
+    color: colors.text,
+    fontSize: 34,
+    fontWeight: "800",
   },
-  connectBtnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  emptyText: {
+    marginTop: 8,
+    color: colors.textSoft,
+    fontSize: 15,
+    lineHeight: 22,
+  },
 });

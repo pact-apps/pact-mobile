@@ -14,7 +14,7 @@ export function openAccount(address: string) {
 }
 
 export function openProgram() {
-  const programId = "6JTfaG74DZydUwHdQAo6P6frYAVhSitwTexomvTphbCs";
+  const programId = "CvTggHr71Qm6NC5qjkvCq4txe2UbbZWrKAWGpMVMWw6y";
   openAccount(programId);
 }
 

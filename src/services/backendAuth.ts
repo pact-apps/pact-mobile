@@ -30,6 +30,18 @@ export async function authenticateWithBackend(
   return token;
 }
 
+export async function ensureBackendAuth(walletAddress: string): Promise<string> {
+  const restored = await restoreBackendAuth();
+  if (restored) {
+    const token = pactApi.getToken();
+    if (token) {
+      return token;
+    }
+  }
+
+  return authenticateWithBackend(walletAddress);
+}
+
 /** Restore cached JWT if available */
 export async function restoreBackendAuth(): Promise<boolean> {
   const token = await AsyncStorage.getItem(JWT_KEY);
