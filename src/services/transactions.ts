@@ -1,5 +1,5 @@
 import { BN } from "@coral-xyz/anchor";
-import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { PublicKey, SystemProgram, SYSVAR_RENT_PUBKEY } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
   getAssociatedTokenAddress,
@@ -9,9 +9,16 @@ import {
   getChallengePDA,
   getVaultPDA,
   getParticipantPDA,
+  getCommitmentProfilePDA,
+  getSkrLockPDA,
+  getDisputeReceiptPDA,
+  getPlatformConfigPDA,
+  getSkrVaultPDA,
+  fetchPlatformConfig,
 } from "./anchor";
 import { signAndSendTransaction } from "./wallet";
-import { USDC_MINT, TREASURY_WALLET } from "../utils/constants";
+import { SKR_BASE_UNITS, USDC_MINT } from "../utils/constants";
+import type { FinalizePlanResponse } from "./pactApi";
 
 // ==========================================
 // CREATE CHALLENGE
@@ -45,6 +52,7 @@ export async function createChallenge(
       usdcMint: USDC_MINT,
       tokenProgram: TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
+      rent: SYSVAR_RENT_PUBKEY,
     })
     .transaction();
 
@@ -62,6 +70,8 @@ export async function joinChallenge(
   const [challengePDA] = getChallengePDA(challengeId);
   const [vaultPDA] = getVaultPDA(challengePDA);
   const [participantPDA] = getParticipantPDA(challengePDA, participant);
+  const [commitmentProfilePDA] = getCommitmentProfilePDA(participant);
+  const [skrLockPDA] = getSkrLockPDA(participant);
 
   const participantTokenAccount = await getAssociatedTokenAddress(
     USDC_MINT,
@@ -74,11 +84,14 @@ export async function joinChallenge(
       participant,
       challenge: challengePDA,
       participantState: participantPDA,
+      commitmentProfile: commitmentProfilePDA,
       participantTokenAccount,
       vault: vaultPDA,
+      skrLock: skrLockPDA,
       challengeMint: USDC_MINT,
       tokenProgram: TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
+      rent: SYSVAR_RENT_PUBKEY,
     })
     .transaction();
 
@@ -143,6 +156,11 @@ export async function disputeParticipant(
   const [challengePDA] = getChallengePDA(challengeId);
   const [targetPDA] = getParticipantPDA(challengePDA, targetParticipant);
   const [disputerPDA] = getParticipantPDA(challengePDA, disputer);
+  const [disputeReceiptPDA] = getDisputeReceiptPDA(
+    challengePDA,
+    disputer,
+    targetParticipant
+  );
 
   const tx = await program.methods
     .dispute()
@@ -151,6 +169,8 @@ export async function disputeParticipant(
       challenge: challengePDA,
       targetParticipantState: targetPDA,
       disputerState: disputerPDA,
+      disputeReceipt: disputeReceiptPDA,
+      systemProgram: SystemProgram.programId,
     })
     .transaction();
 
@@ -159,21 +179,29 @@ export async function disputeParticipant(
 
 // ==========================================
 // FINALIZE / SETTLEMENT (permissionless)
-// remaining_accounts: [ParticipantState_0, TokenAccount_0, ...]
+// remaining_accounts: [ParticipantState_0, TokenAccount_0, CommitmentProfile_0, ...]
 // ==========================================
 export async function finalizeChallenge(
   authority: PublicKey,
   challengeId: string,
-  participantKeys: PublicKey[]
+  participantKeys: PublicKey[],
+  finalizePlan?: FinalizePlanResponse
 ): Promise<string> {
   const program = getProgram();
   const [challengePDA] = getChallengePDA(challengeId);
   const [vaultPDA] = getVaultPDA(challengePDA);
+  const platformConfigPDA = finalizePlan
+    ? new PublicKey(finalizePlan.platform_config_pda)
+    : getPlatformConfigPDA()[0];
+  const platformConfig = finalizePlan ? null : await fetchPlatformConfig();
 
-  const treasuryTokenAccount = await getAssociatedTokenAddress(
-    USDC_MINT,
-    TREASURY_WALLET
-  );
+  if (!finalizePlan && !platformConfig) {
+    throw new Error("Platform config is not initialized on-chain");
+  }
+
+  const treasuryTokenAccount = finalizePlan
+    ? new PublicKey(finalizePlan.treasury_token_account)
+    : await getAssociatedTokenAddress(USDC_MINT, platformConfig!.account.treasuryAuthority);
 
   const remainingAccounts: {
     pubkey: PublicKey;
@@ -181,31 +209,57 @@ export async function finalizeChallenge(
     isWritable: boolean;
   }[] = [];
 
-  for (const partKey of participantKeys) {
-    const [partPDA] = getParticipantPDA(challengePDA, partKey);
-    const partTokenAccount = await getAssociatedTokenAddress(
-      USDC_MINT,
-      partKey
-    );
-    remainingAccounts.push({
-      pubkey: partPDA,
-      isSigner: false,
-      isWritable: true,
-    });
-    remainingAccounts.push({
-      pubkey: partTokenAccount,
-      isSigner: false,
-      isWritable: true,
-    });
+  if (finalizePlan) {
+    for (const triple of finalizePlan.participant_triples) {
+      remainingAccounts.push({
+        pubkey: new PublicKey(triple.participant_state),
+        isSigner: false,
+        isWritable: true,
+      });
+      remainingAccounts.push({
+        pubkey: new PublicKey(triple.payout_token_account),
+        isSigner: false,
+        isWritable: true,
+      });
+      remainingAccounts.push({
+        pubkey: new PublicKey(triple.commitment_profile),
+        isSigner: false,
+        isWritable: true,
+      });
+    }
+  } else {
+    for (const partKey of participantKeys) {
+      const [partPDA] = getParticipantPDA(challengePDA, partKey);
+      const [commitmentProfilePDA] = getCommitmentProfilePDA(partKey);
+      const partTokenAccount = await getAssociatedTokenAddress(
+        USDC_MINT,
+        partKey
+      );
+      remainingAccounts.push({
+        pubkey: partPDA,
+        isSigner: false,
+        isWritable: true,
+      });
+      remainingAccounts.push({
+        pubkey: partTokenAccount,
+        isSigner: false,
+        isWritable: true,
+      });
+      remainingAccounts.push({
+        pubkey: commitmentProfilePDA,
+        isSigner: false,
+        isWritable: true,
+      });
+    }
   }
 
   const tx = await program.methods
     .finalize()
     .accounts({
       authority,
+      platformConfig: platformConfigPDA,
       challenge: challengePDA,
       vault: vaultPDA,
-      treasury: TREASURY_WALLET,
       treasuryTokenAccount,
       tokenProgram: TOKEN_PROGRAM_ID,
     })
@@ -233,6 +287,61 @@ export async function voteContinue(
       participant,
       challenge: challengePDA,
       participantState: participantPDA,
+    })
+    .transaction();
+
+  return await signAndSendTransaction(tx);
+}
+
+export async function lockSkr(
+  user: PublicKey,
+  skrMint: PublicKey,
+  amount: number
+): Promise<string> {
+  const program = getProgram();
+  const [skrLockPDA] = getSkrLockPDA(user);
+  const [skrVaultPDA] = getSkrVaultPDA(user);
+  const [commitmentProfilePDA] = getCommitmentProfilePDA(user);
+  const userSkrTokenAccount = await getAssociatedTokenAddress(skrMint, user);
+
+  const tx = await program.methods
+    .lockSkr(new BN(Math.round(amount * SKR_BASE_UNITS)))
+    .accounts({
+      user,
+      skrLock: skrLockPDA,
+      skrVault: skrVaultPDA,
+      commitmentProfile: commitmentProfilePDA,
+      userSkrTokenAccount,
+      skrMint,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+      rent: SYSVAR_RENT_PUBKEY,
+    })
+    .transaction();
+
+  return await signAndSendTransaction(tx);
+}
+
+export async function unlockSkr(
+  user: PublicKey,
+  skrMint: PublicKey,
+  amount: number
+): Promise<string> {
+  const program = getProgram();
+  const [skrLockPDA] = getSkrLockPDA(user);
+  const [skrVaultPDA] = getSkrVaultPDA(user);
+  const [commitmentProfilePDA] = getCommitmentProfilePDA(user);
+  const userSkrTokenAccount = await getAssociatedTokenAddress(skrMint, user);
+
+  const tx = await program.methods
+    .unlockSkr(new BN(Math.round(amount * SKR_BASE_UNITS)))
+    .accounts({
+      user,
+      skrLock: skrLockPDA,
+      skrVault: skrVaultPDA,
+      commitmentProfile: commitmentProfilePDA,
+      userSkrTokenAccount,
+      tokenProgram: TOKEN_PROGRAM_ID,
     })
     .transaction();
 

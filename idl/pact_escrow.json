@@ -1,5 +1,5 @@
 {
-  "address": "6JTfaG74DZydUwHdQAo6P6frYAVhSitwTexomvTphbCs",
+  "address": "CvTggHr71Qm6NC5qjkvCq4txe2UbbZWrKAWGpMVMWw6y",
   "metadata": {
     "name": "pact_escrow",
     "version": "0.1.0",
@@ -136,6 +136,7 @@
       "accounts": [
         {
           "name": "disputer",
+          "writable": true,
           "signer": true
         },
         {
@@ -181,6 +182,43 @@
               }
             ]
           }
+        },
+        {
+          "name": "dispute_receipt",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  105,
+                  115,
+                  112,
+                  117,
+                  116,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "challenge"
+              },
+              {
+                "kind": "account",
+                "path": "disputer"
+              },
+              {
+                "kind": "account",
+                "path": "target_participant_state.participant",
+                "account": "ParticipantState"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": []
@@ -195,12 +233,15 @@
         "2. Submitted Success but disputed by >50% of others → fail",
         "3. Rest → winner",
         "4. Distribution:",
-        "- Has winners → 2% fee, rest split to winners",
-        "- All fail cycle 1 → enter AllFailVoting phase",
-        "- All fail cycle 2+ → refund with 2% fee",
+        "- Winners always get their original stake back in full",
+        "- Loser stake becomes penalty_pool",
+        "- Fee is charged only from penalty_pool",
+        "- Remaining penalty_pool is split among winners",
+        "- All win → full refunds, no fee",
+        "- All fail → refunds minus fee, split equally across participants",
         "",
         "remaining_accounts layout:",
-        "[ParticipantState_0, TokenAccount_0, ParticipantState_1, TokenAccount_1, ...]"
+        "[ParticipantState_0, TokenAccount_0, CommitmentProfile_0, ParticipantState_1, TokenAccount_1, CommitmentProfile_1, ...]"
       ],
       "discriminator": [
         171,
@@ -217,6 +258,33 @@
           "name": "authority",
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "platform_config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  108,
+                  97,
+                  116,
+                  102,
+                  111,
+                  114,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "challenge",
@@ -245,10 +313,6 @@
           }
         },
         {
-          "name": "treasury",
-          "writable": true
-        },
-        {
           "name": "treasury_token_account",
           "writable": true
         },
@@ -258,6 +322,67 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "initialize_platform_config",
+      "docs": [
+        "Initialize the global platform config that defines the PACT treasury authority."
+      ],
+      "discriminator": [
+        23,
+        52,
+        237,
+        53,
+        176,
+        235,
+        3,
+        187
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "platform_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  108,
+                  97,
+                  116,
+                  102,
+                  111,
+                  114,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "treasury_authority",
+          "type": "pubkey"
+        }
+      ]
     },
     {
       "name": "join_challenge",
@@ -317,6 +442,41 @@
           }
         },
         {
+          "name": "commitment_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  109,
+                  105,
+                  116,
+                  109,
+                  101,
+                  110,
+                  116,
+                  95,
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "participant"
+              }
+            ]
+          }
+        },
+        {
           "name": "participant_token_account",
           "writable": true
         },
@@ -343,6 +503,9 @@
           }
         },
         {
+          "name": "skr_lock"
+        },
+        {
           "name": "challenge_mint"
         },
         {
@@ -352,9 +515,147 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
         }
       ],
       "args": []
+    },
+    {
+      "name": "lock_skr",
+      "docs": [
+        "Lock SKR to activate commitment score boost."
+      ],
+      "discriminator": [
+        18,
+        54,
+        171,
+        57,
+        10,
+        239,
+        149,
+        108
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "skr_lock",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  107,
+                  114,
+                  95,
+                  108,
+                  111,
+                  99,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "skr_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  107,
+                  114,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "commitment_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  109,
+                  105,
+                  116,
+                  109,
+                  101,
+                  110,
+                  116,
+                  95,
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_skr_token_account",
+          "writable": true
+        },
+        {
+          "name": "skr_mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
     },
     {
       "name": "start_challenge",
@@ -457,6 +758,189 @@
       ]
     },
     {
+      "name": "unlock_skr",
+      "docs": [
+        "Unlock SKR after all active challenge participation has completed."
+      ],
+      "discriminator": [
+        1,
+        1,
+        227,
+        229,
+        88,
+        77,
+        31,
+        248
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "skr_lock",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  107,
+                  114,
+                  95,
+                  108,
+                  111,
+                  99,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "skr_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  107,
+                  114,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "commitment_profile",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  109,
+                  105,
+                  116,
+                  109,
+                  101,
+                  110,
+                  116,
+                  95,
+                  112,
+                  114,
+                  111,
+                  102,
+                  105,
+                  108,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_skr_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "update_platform_config",
+      "docs": [
+        "Update the platform treasury authority. Only the platform authority may do this."
+      ],
+      "discriminator": [
+        195,
+        60,
+        76,
+        129,
+        146,
+        45,
+        67,
+        143
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "platform_config"
+          ]
+        },
+        {
+          "name": "platform_config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  108,
+                  97,
+                  116,
+                  102,
+                  111,
+                  114,
+                  109,
+                  95,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "treasury_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "vote_continue",
       "docs": [
         "All-fail cycle 1: vote untuk continue atau refund"
@@ -535,6 +1019,32 @@
       ]
     },
     {
+      "name": "CommitmentProfile",
+      "discriminator": [
+        174,
+        202,
+        144,
+        190,
+        18,
+        185,
+        203,
+        83
+      ]
+    },
+    {
+      "name": "DisputeReceipt",
+      "discriminator": [
+        141,
+        11,
+        0,
+        34,
+        20,
+        47,
+        204,
+        32
+      ]
+    },
+    {
       "name": "ParticipantState",
       "discriminator": [
         94,
@@ -545,6 +1055,32 @@
         209,
         252,
         75
+      ]
+    },
+    {
+      "name": "PlatformConfig",
+      "discriminator": [
+        160,
+        78,
+        128,
+        0,
+        248,
+        83,
+        230,
+        160
+      ]
+    },
+    {
+      "name": "SkrLockAccount",
+      "discriminator": [
+        184,
+        3,
+        184,
+        194,
+        126,
+        77,
+        234,
+        28
       ]
     }
   ],
@@ -576,6 +1112,19 @@
       ]
     },
     {
+      "name": "CommitmentScoreUpdated",
+      "discriminator": [
+        123,
+        139,
+        15,
+        213,
+        35,
+        150,
+        71,
+        139
+      ]
+    },
+    {
       "name": "DisputeFiled",
       "discriminator": [
         201,
@@ -602,6 +1151,19 @@
       ]
     },
     {
+      "name": "PlatformConfigUpdated",
+      "discriminator": [
+        198,
+        206,
+        187,
+        204,
+        148,
+        251,
+        237,
+        25
+      ]
+    },
+    {
       "name": "ResultSubmitted",
       "discriminator": [
         156,
@@ -612,6 +1174,32 @@
         144,
         63,
         94
+      ]
+    },
+    {
+      "name": "SkrLocked",
+      "discriminator": [
+        149,
+        235,
+        3,
+        68,
+        48,
+        105,
+        243,
+        178
+      ]
+    },
+    {
+      "name": "SkrUnlocked",
+      "discriminator": [
+        151,
+        54,
+        98,
+        232,
+        117,
+        20,
+        188,
+        59
       ]
     }
   ],
@@ -710,6 +1298,76 @@
       "code": 6018,
       "name": "InvalidParticipant",
       "msg": "Participant does not belong to this challenge"
+    },
+    {
+      "code": 6019,
+      "name": "InvalidPayoutAccount",
+      "msg": "Payout account owner does not match participant"
+    },
+    {
+      "code": 6020,
+      "name": "InvalidPayoutMint",
+      "msg": "Payout account mint does not match challenge vault mint"
+    },
+    {
+      "code": 6021,
+      "name": "InvalidSkrLockAmount",
+      "msg": "Invalid SKR lock amount"
+    },
+    {
+      "code": 6022,
+      "name": "InvalidSkrUnlockAmount",
+      "msg": "Invalid SKR unlock amount"
+    },
+    {
+      "code": 6023,
+      "name": "InsufficientSkrBalance",
+      "msg": "Locked SKR balance is insufficient"
+    },
+    {
+      "code": 6024,
+      "name": "InsufficientSkrLock",
+      "msg": "Minimum SKR lock threshold not met"
+    },
+    {
+      "code": 6025,
+      "name": "ActiveChallengeParticipation",
+      "msg": "Cannot unlock SKR while participating in an active challenge"
+    },
+    {
+      "code": 6026,
+      "name": "InvalidSkrLockAccount",
+      "msg": "Invalid SKR lock account"
+    },
+    {
+      "code": 6027,
+      "name": "InvalidSkrLockOwner",
+      "msg": "Invalid SKR lock owner"
+    },
+    {
+      "code": 6028,
+      "name": "InvalidSkrMint",
+      "msg": "Invalid SKR mint"
+    },
+    {
+      "code": 6029,
+      "name": "InvalidCommitmentProfile",
+      "msg": "Invalid commitment profile account"
+    },
+    {
+      "code": 6030,
+      "name": "InvalidPlatformAuthority",
+      "msg": "Only the platform authority may update this config"
+    },
+    {
+      "code": 6031,
+      "name": "InvalidTreasuryTokenAccount",
+      "msg": "Treasury token account must belong to the configured PACT treasury authority"
+    },
+    {
+      "code": 6032,
+      "name": "InvalidTreasuryMint",
+      "msg": "Treasury token account mint must match the challenge vault mint"
     }
   ],
   "types": [
@@ -829,6 +1487,26 @@
           {
             "name": "fee",
             "type": "u64"
+          },
+          {
+            "name": "penalty_pool",
+            "type": "u64"
+          },
+          {
+            "name": "reward_per_winner",
+            "type": "u64"
+          },
+          {
+            "name": "reward_remainder",
+            "type": "u64"
+          },
+          {
+            "name": "all_win",
+            "type": "bool"
+          },
+          {
+            "name": "all_fail",
+            "type": "bool"
           }
         ]
       }
@@ -860,6 +1538,58 @@
       }
     },
     {
+      "name": "CommitmentProfile",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "commitment_score",
+            "type": "i64"
+          },
+          {
+            "name": "active_challenge_count",
+            "type": "u32"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CommitmentScoreUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "challenge_key",
+            "type": "pubkey"
+          },
+          {
+            "name": "delta",
+            "type": "i64"
+          },
+          {
+            "name": "new_score",
+            "type": "i64"
+          },
+          {
+            "name": "boost_enabled",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
       "name": "DisputeFiled",
       "type": {
         "kind": "struct",
@@ -884,6 +1614,30 @@
       }
     },
     {
+      "name": "DisputeReceipt",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "challenge",
+            "type": "pubkey"
+          },
+          {
+            "name": "disputer",
+            "type": "pubkey"
+          },
+          {
+            "name": "target",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
       "name": "ParticipantJoined",
       "type": {
         "kind": "struct",
@@ -899,6 +1653,10 @@
           {
             "name": "total_participants",
             "type": "u8"
+          },
+          {
+            "name": "boost_enabled",
+            "type": "bool"
           }
         ]
       }
@@ -954,6 +1712,10 @@
             "type": "bool"
           },
           {
+            "name": "boost_enabled",
+            "type": "bool"
+          },
+          {
             "name": "vote_continue",
             "type": {
               "option": "bool"
@@ -962,6 +1724,42 @@
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PlatformConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PlatformConfigUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "treasury_authority",
+            "type": "pubkey"
           }
         ]
       }
@@ -982,6 +1780,70 @@
           {
             "name": "success",
             "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SkrLockAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "skr_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount_locked",
+            "type": "u64"
+          },
+          {
+            "name": "lock_timestamp",
+            "type": "i64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SkrLocked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount_locked",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SkrUnlocked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount_locked",
+            "type": "u64"
           }
         ]
       }

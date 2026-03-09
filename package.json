@@ -4,13 +4,17 @@
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
+    "dev": "expo start --dev-client",
+    "dev:clean": "expo start --dev-client --clear",
     "android": "expo run:android",
+    "android:dev": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
     "@expo/metro-runtime": "~55.0.6",
+    "@expo/vector-icons": "^15.1.1",
     "@react-native-async-storage/async-storage": "^2.1.2",
     "@react-navigation/bottom-tabs": "^7.15.3",
     "@react-navigation/native": "^7.1.31",
@@ -41,9 +45,13 @@
     "zustand": "^5.0.11"
   },
   "devDependencies": {
-    "@react-native-community/cli": "latest",
+    "@react-native-community/cli": "20.1.2",
     "@types/react": "~19.2.2",
     "typescript": "~5.9.2"
   },
-  "private": true
+  "private": true,
+  "engines": {
+    "node": ">=20 <21",
+    "npm": ">=10 <11"
+  }
 }
