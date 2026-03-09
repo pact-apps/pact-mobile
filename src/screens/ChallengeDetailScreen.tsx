@@ -1,654 +1,570 @@
-import React, { useState, useEffect, useCallback } from "react";
-import {
-  View,
-  Text,
-  Image,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  Alert,
-  ActivityIndicator,
-} from "react-native";
-import * as ImagePicker from "expo-image-picker";
-import {
-  useChallengeDetail,
-  useVaultBalance,
-  useParticipantState,
-  useAllParticipants,
-} from "../hooks/useChallenge";
-import { useAppStore } from "../store/useAppStore";
-import {
-  joinChallenge,
-  startChallenge,
-  submitResult,
-  disputeParticipant,
-  finalizeChallenge,
-  voteContinue,
-} from "../services/transactions";
-import { openTransaction } from "../utils/explorer";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Alert, SafeAreaView, ScrollView, Share, StyleSheet, Text, View } from "react-native";
+import { NativeStackScreenProps } from "@react-navigation/native-stack";
+import * as Clipboard from "expo-clipboard";
+import PactButton from "../components/ui/PactButton";
+import ParticipantStatusCard from "../components/challenges/ParticipantStatusCard";
+import { RootStackParamList } from "../navigation/AppNavigator";
+import { fetchAllParticipants, fetchChallenge } from "../services/anchor";
 import { pactApi } from "../services/apiInstance";
-import { PublicKey } from "@solana/web3.js";
+import { ensureBackendAuth } from "../services/backendAuth";
+import type { ChallengeConfigResponse } from "../services/pactApi";
+import { joinChallenge, startChallenge } from "../services/transactions";
+import { useAppStore } from "../store/useAppStore";
+import { formatUsdc } from "../utils/format";
 
-function formatCountdown(seconds: number): string {
-  if (seconds <= 0) return "Expired";
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  if (d > 0) return `${d}d ${h}h ${m}m`;
-  if (h > 0) return `${h}h ${m}m ${s}s`;
-  return `${m}m ${s}s`;
-}
+type Props = NativeStackScreenProps<RootStackParamList, "ChallengeDetail">;
 
-function getStatusColor(status: string): string {
-  switch (status) {
-    case "open":
-      return "#4ade80";
-    case "active":
-      return "#facc15";
-    case "submission":
-      return "#f97316";
-    case "allFailVoting":
-      return "#ef4444";
-    case "settled":
-      return "#6b7280";
-    case "cancelled":
-      return "#6b7280";
-    default:
-      return "#9ca3af";
-  }
-}
-
-export default function ChallengeDetailScreen({ route }: any) {
+export default function ChallengeDetailScreen({ navigation, route }: Props) {
+  const [chainChallenge, setChainChallenge] = useState<Awaited<ReturnType<typeof fetchChallenge>>>(null);
+  const [metadata, setMetadata] = useState<ChallengeConfigResponse | null>(null);
+  const [participants, setParticipants] = useState<
+    Awaited<ReturnType<typeof fetchAllParticipants>>
+  >([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isJoiningCreator, setIsJoiningCreator] = useState(false);
   const { challengeId } = route.params;
-  const { publicKey } = useAppStore();
-  const { data: challenge, isLoading, refetch } = useChallengeDetail(challengeId);
-  const { data: vaultBalance } = useVaultBalance(challenge?.publicKey ?? null);
-  const { data: myState } = useParticipantState(
-    challenge?.publicKey ?? null,
-    publicKey ?? null
-  );
-  const { data: participants } = useAllParticipants(
-    challenge?.publicKey ?? null
-  );
-  const [countdown, setCountdown] = useState("");
-  const [actionLoading, setActionLoading] = useState(false);
-  const [proofImage, setProofImage] = useState<string | null>(null);
+  const publicKey = useAppStore((state) => state.publicKey);
 
-  const c = challenge?.account;
-  const status = c ? Object.keys(c.status)[0] : "";
+  const loadChallenge = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const [found, metadataResult] = await Promise.all([
+        fetchChallenge(challengeId),
+        pactApi.challenges.get(challengeId).catch(() => null),
+      ]);
+      let nextMetadata = metadataResult;
 
-  // Countdown timer
+      const shouldResyncMetadata =
+        !!found &&
+        !!publicKey &&
+        !!route.params.title &&
+        (!!route.params.description || !!route.params.rules) &&
+        (
+          !metadataResult ||
+          !metadataResult.metadata.description?.trim() ||
+          !getRulesText(metadataResult)
+        );
+
+      if (shouldResyncMetadata) {
+        try {
+          await ensureBackendAuth(publicKey.toBase58());
+          nextMetadata = await pactApi.challenges.upsertMetadata(challengeId, {
+            challenge_pubkey: found.publicKey.toBase58(),
+            title: route.params.title ?? found.account.title,
+            description: route.params.description?.trim() || undefined,
+            challenge_type: route.params.challengeType ?? "final_only",
+            proof_rule_config: { proof_kind: "photo" },
+            target_days: Number(route.params.duration ?? 0) || undefined,
+            required_checkins:
+              route.params.challengeType === "daily_checkin"
+                ? Number(route.params.duration ?? 0) || undefined
+                : undefined,
+            grace_days: route.params.challengeType === "daily_checkin" ? 1 : 0,
+            rules_json: route.params.rules?.trim()
+              ? { text: route.params.rules.trim() }
+              : undefined,
+          });
+        } catch {
+          // Keep the existing fallback copy if backend resync still fails.
+        }
+      }
+
+      setChainChallenge(found);
+      setMetadata(nextMetadata);
+      setParticipants(found ? await fetchAllParticipants(found.publicKey) : []);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [challengeId, publicKey, route.params.challengeType, route.params.description, route.params.duration, route.params.rules, route.params.title]);
+
   useEffect(() => {
-    if (!c) return;
-    const updateCountdown = () => {
-      const now = Math.floor(Date.now() / 1000);
-      let targetTime = 0;
-      if (status === "active") {
-        targetTime = c.deadline?.toNumber?.() ?? c.deadline ?? 0;
-      } else if (status === "submission") {
-        targetTime =
-          c.submissionDeadline?.toNumber?.() ?? c.submissionDeadline ?? 0;
-      }
-      if (targetTime > 0) {
-        setCountdown(formatCountdown(Math.max(0, targetTime - now)));
-      } else {
-        setCountdown("");
-      }
-    };
-    updateCountdown();
-    const interval = setInterval(updateCountdown, 1000);
-    return () => clearInterval(interval);
-  }, [c, status]);
+    let active = true;
 
-  const handleAction = useCallback(
-    async (action: () => Promise<string>, successMsg: string) => {
-      if (!publicKey) {
-        Alert.alert("Error", "Connect wallet first");
+    const load = async () => {
+      if (!active) {
         return;
       }
-      setActionLoading(true);
-      try {
-        const sig = await action();
-        refetch();
-        Alert.alert("Success", successMsg, [
-          { text: "OK" },
-          { text: "View TX", onPress: () => openTransaction(sig) },
-        ]);
-      } catch (error: any) {
-        Alert.alert("Error", error.message || "Transaction failed");
-      } finally {
-        setActionLoading(false);
-      }
-    },
-    [publicKey, refetch]
-  );
+      await loadChallenge();
+    };
 
-  if (isLoading) {
-    return (
-      <View style={styles.container}>
-        <ActivityIndicator size="large" color="#7c3aed" style={{ marginTop: 40 }} />
-      </View>
-    );
-  }
+    void load();
 
-  if (!challenge || !c) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.error}>Challenge not found</Text>
-      </View>
-    );
-  }
+    return () => {
+      active = false;
+    };
+  }, [loadChallenge]);
+
+  const merged = useMemo(() => {
+    const account = chainChallenge?.account;
+    const metadataDescription = metadata?.metadata.description?.trim() || null;
+    const metadataRules = getRulesText(metadata);
+    const statusKey = account ? Object.keys(account.status)[0] : "active";
+    return {
+      statusKey,
+      title: account?.title ?? route.params.title ?? "Challenge",
+      description:
+        metadataDescription ??
+        route.params.description ??
+        "Challenge details will appear here once the creator adds them.",
+      rules:
+        metadataRules ??
+        route.params.rules ??
+        "No rules added by the creator yet.",
+      challengeType:
+        metadata?.metadata.challenge_type ?? route.params.challengeType ?? "final_only",
+      stake:
+        account ? formatUsdc(account.stakeAmount.toNumber() / 1_000_000) : route.params.stake ?? "0.00",
+      duration:
+        account?.durationSeconds.divn(24 * 60 * 60).toString() ?? route.params.duration ?? "0",
+      maxParticipants: account?.maxParticipants.toString() ?? route.params.maxParticipants ?? "0",
+      participantCount: account?.participantCount.toString() ?? "0",
+      status: formatStatus(statusKey),
+      timeLeft: account ? getTimeLeftLabel(account) : "--",
+      timeLabel: account ? getTimeMetricLabel(account) : "Time Left",
+    };
+  }, [chainChallenge, route.params]);
 
   const isCreator =
-    publicKey && c.creator.toBase58() === publicKey.toBase58();
-  const hasJoined = !!myState?.deposited;
-  const hasSubmitted = !!myState?.submitted;
+    !!publicKey &&
+    !!chainChallenge &&
+    chainChallenge.account.creator.toBase58() === publicKey.toBase58();
+  const isCreatorJoined =
+    !!publicKey &&
+    participants.some(
+      (participant) => participant.account.participant.toBase58() === publicKey.toBase58()
+    );
+  const canJoinAsCreator =
+    !!publicKey &&
+    isCreator &&
+    !isCreatorJoined &&
+    merged.statusKey === "open";
+  const canStart =
+    merged.statusKey === "open" && isCreator && Number(merged.participantCount) >= 2;
+  const canSubmit = merged.statusKey === "active" || merged.statusKey === "submission";
+  const canReview = merged.statusKey === "submission" || merged.statusKey === "allFailVoting";
+  const canViewSettlement = merged.statusKey === "settled" || merged.statusKey === "allFailVoting";
+
+  const onStartChallenge = async () => {
+    if (!publicKey) {
+      Alert.alert("Wallet Required", "Connect your wallet before starting a challenge.");
+      return;
+    }
+    if (!canStart) {
+      Alert.alert("Cannot Start Yet", "A challenge needs at least 2 participants before it can start.");
+      return;
+    }
+
+    setIsStarting(true);
+    try {
+      await startChallenge(publicKey, challengeId);
+      await loadChallenge();
+    } catch (error: any) {
+      Alert.alert("Start Failed", error?.message || "Could not start the challenge.");
+    } finally {
+      setIsStarting(false);
+    }
+  };
+
+  const onCopyInviteCode = async () => {
+    await Clipboard.setStringAsync(challengeId);
+    Alert.alert("Invite Code Copied", "Share this code so your friends can join the challenge.");
+  };
+
+  const onShareInviteCode = async () => {
+    await Share.share({
+      message: `Join my Pact challenge "${merged.title}" with invite code: ${challengeId}`,
+    });
+  };
+
+  const onJoinAsCreator = async () => {
+    if (!publicKey) {
+      Alert.alert("Wallet Required", "Connect your wallet before joining this challenge.");
+      return;
+    }
+
+    setIsJoiningCreator(true);
+    try {
+      await joinChallenge(publicKey, challengeId);
+      await loadChallenge();
+      Alert.alert("Joined as Creator", "Your stake has been added to the challenge.");
+    } catch (error: any) {
+      Alert.alert(
+        "Join Failed",
+        error?.message || "Could not join this challenge as the creator right now."
+      );
+    } finally {
+      setIsJoiningCreator(false);
+    }
+  };
 
   return (
-    <ScrollView style={styles.container}>
-      {/* Title & Status */}
-      <Text style={styles.title}>{c.title}</Text>
-      <View style={styles.statusBadge}>
-        <View
-          style={[styles.statusDot, { backgroundColor: getStatusColor(status) }]}
-        />
-        <Text style={[styles.statusText, { color: getStatusColor(status) }]}>
-          {status.toUpperCase()}
-        </Text>
-        {c.cycle > 1 && (
-          <Text style={styles.cycleText}>Cycle {c.cycle}</Text>
-        )}
-      </View>
-
-      {/* Countdown */}
-      {countdown !== "" && (
-        <View style={styles.countdownCard}>
-          <Text style={styles.countdownLabel}>
-            {status === "active" ? "Deadline" : "Submission Closes"}
-          </Text>
-          <Text style={styles.countdownValue}>{countdown}</Text>
+    <SafeAreaView style={styles.container}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.headerCard}>
+          <Text style={styles.title}>{merged.title}</Text>
+          <Text style={styles.challengeId}>Invite Code: {challengeId}</Text>
+          <View style={styles.typeBadge}>
+            <Text style={styles.typeBadgeText}>{formatChallengeType(merged.challengeType)}</Text>
+          </View>
+          <Text style={styles.description}>{merged.description}</Text>
+          <View style={styles.metricRow}>
+            <Metric label="Stake" value={`${merged.stake} USDC`} />
+            <Metric label="Duration" value={`${merged.duration} days`} />
+          </View>
+          <View style={styles.metricRow}>
+            <Metric label="Players" value={`${merged.participantCount} / ${merged.maxParticipants}`} />
+            <Metric label={merged.timeLabel} value={merged.timeLeft} />
+          </View>
+          <View style={styles.statusBadge}>
+            <Text style={styles.statusText}>{isLoading ? "Status: Loading..." : `Status: ${merged.status}`}</Text>
+          </View>
+          <View style={styles.shareRow}>
+            <PactButton
+              label="Copy Code"
+              variant="secondary"
+              onPress={() => void onCopyInviteCode()}
+              style={styles.shareButton}
+            />
+            <PactButton
+              label="Share"
+              onPress={() => void onShareInviteCode()}
+              style={styles.shareButton}
+            />
+          </View>
         </View>
-      )}
 
-      {/* Escrow Pool */}
-      <View style={styles.poolCard}>
-        <Text style={styles.poolLabel}>Escrow Pool</Text>
-        <Text style={styles.poolAmount}>
-          {(vaultBalance ?? 0).toFixed(2)} USDC
-        </Text>
-      </View>
+        <View style={styles.rulesCard}>
+          <Text style={styles.sectionTitle}>Description</Text>
+          <Text style={styles.rulesText}>{merged.description}</Text>
+        </View>
 
-      {/* Info */}
-      <View style={styles.infoSection}>
-        <InfoRow
-          label="Stake"
-          value={`${(c.stakeAmount?.toNumber?.() ?? c.stakeAmount) / 1_000_000} USDC`}
-        />
-        <InfoRow
-          label="Participants"
-          value={`${c.participantCount ?? c.depositCount ?? 0} / ${c.maxParticipants}`}
-        />
-        <InfoRow
-          label="Duration"
-          value={`${Math.floor(((c.durationSeconds?.toNumber?.() ?? c.durationSeconds) || 0) / 86400)} days`}
-        />
-      </View>
+        <View style={styles.rulesCard}>
+          <Text style={styles.sectionTitle}>Rules</Text>
+          <Text style={styles.rulesText}>{merged.rules}</Text>
+        </View>
 
-      {/* Action Buttons */}
-      {actionLoading && (
-        <ActivityIndicator
-          size="small"
-          color="#7c3aed"
-          style={{ marginVertical: 12 }}
-        />
-      )}
-
-      <View style={styles.actionsSection}>
-        {/* JOIN — when Open and not yet joined */}
-        {status === "open" && !hasJoined && publicKey && (
-          <ActionButton
-            label="Join Challenge"
-            color="#16a34a"
-            disabled={actionLoading}
-            onPress={() =>
-              handleAction(
-                () => joinChallenge(publicKey, challengeId),
-                "Joined! USDC deposited to escrow."
-              )
-            }
-          />
-        )}
-
-        {/* START — creator only, when Open and >= 2 participants */}
-        {status === "open" &&
-          isCreator &&
-          (c.depositCount ?? c.participantCount ?? 0) >= 2 && (
-            <ActionButton
-              label="Start Challenge"
-              color="#7c3aed"
-              disabled={actionLoading}
-              onPress={() =>
-                handleAction(
-                  () => startChallenge(publicKey!, challengeId),
-                  "Challenge started! Countdown begins."
-                )
-              }
-            />
-          )}
-
-        {/* SUBMIT — during submission window, if joined and not submitted */}
-        {status === "submission" && hasJoined && !hasSubmitted && publicKey && (
-          <View>
-            {/* Proof image preview */}
-            {proofImage && (
-              <View style={styles.proofPreview}>
-                <Image
-                  source={{ uri: proofImage }}
-                  style={styles.proofImage}
-                  resizeMode="cover"
-                />
-                <TouchableOpacity
-                  style={styles.removeProofBtn}
-                  onPress={() => setProofImage(null)}
-                >
-                  <Text style={styles.removeProofText}>Remove</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* Pick proof image */}
-            <ActionButton
-              label={proofImage ? "Change Proof Photo" : "Attach Proof Photo"}
-              color="#334155"
-              disabled={actionLoading}
-              onPress={async () => {
-                const result = await ImagePicker.launchImageLibraryAsync({
-                  mediaTypes: ["images"],
-                  quality: 0.8,
-                });
-                if (!result.canceled && result.assets[0]) {
-                  setProofImage(result.assets[0].uri);
-                }
-              }}
-            />
-
-            <ActionButton
-              label="Submit Success"
-              color="#16a34a"
-              disabled={actionLoading}
-              onPress={() =>
-                handleAction(async () => {
-                  let proofHash = new Uint8Array(32);
-
-                  // Upload proof to backend if image selected
-                  if (proofImage) {
-                    try {
-                      const proofResp = await pactApi.proofs.upload(
-                        challengeId,
-                        publicKey.toBase58(),
-                        {
-                          uri: proofImage,
-                          name: "proof.jpg",
-                          type: "image/jpeg",
-                        }
-                      );
-                      // Convert hex hash to bytes for on-chain
-                      const hexHash = proofResp.proof_hash;
-                      proofHash = new Uint8Array(
-                        hexHash.match(/.{1,2}/g)!.map((b) => parseInt(b, 16))
-                      );
-                    } catch (e: any) {
-                      console.warn("Proof upload failed, using empty hash:", e.message);
-                    }
-                  }
-
-                  return submitResult(publicKey, challengeId, true, proofHash);
-                }, "Result submitted: SUCCESS")
-              }
-            />
-            <ActionButton
-              label="Submit Fail"
-              color="#ef4444"
-              disabled={actionLoading}
-              onPress={() =>
-                handleAction(
-                  () =>
-                    submitResult(
-                      publicKey,
-                      challengeId,
-                      false,
-                      new Uint8Array(32)
-                    ),
-                  "Result submitted: FAIL"
-                )
-              }
-            />
-          </View>
-        )}
-
-        {/* FINALIZE — anyone can trigger after submission window */}
-        {(status === "submission" || status === "active") &&
-          publicKey &&
-          participants &&
-          participants.length > 0 && (
-            <ActionButton
-              label="Settle Challenge"
-              color="#f59e0b"
-              disabled={actionLoading}
-              onPress={() =>
-                handleAction(
-                  () =>
-                    finalizeChallenge(
-                      publicKey,
-                      challengeId,
-                      participants.map(
-                        (p: any) => new PublicKey(p.account.participant)
-                      )
-                    ),
-                  "Challenge settled! Check your wallet."
-                )
-              }
-            />
-          )}
-
-        {/* VOTE CONTINUE — AllFailVoting phase */}
-        {status === "allFailVoting" && hasJoined && publicKey && (
-          <View>
-            <ActionButton
-              label="Vote: Continue"
-              color="#7c3aed"
-              disabled={actionLoading}
-              onPress={() =>
-                handleAction(
-                  () => voteContinue(publicKey, challengeId, true),
-                  "Voted to continue!"
-                )
-              }
-            />
-            <ActionButton
-              label="Vote: Refund"
-              color="#ef4444"
-              disabled={actionLoading}
-              onPress={() =>
-                handleAction(
-                  () => voteContinue(publicKey, challengeId, false),
-                  "Voted to refund!"
-                )
-              }
-            />
-          </View>
-        )}
-      </View>
-
-      {/* Participants List */}
-      {participants && participants.length > 0 && (
-        <View style={styles.participantsSection}>
+        <View style={styles.participantsWrap}>
           <Text style={styles.sectionTitle}>Participants</Text>
-          {participants.map((p: any) => {
-            const addr = p.account.participant.toBase58();
-            const subResult = Object.keys(
-              p.account.submissionResult ?? { none: {} }
-            )[0];
-            const isMe =
-              publicKey && addr === publicKey.toBase58();
-
-            return (
-              <View key={addr} style={styles.participantRow}>
-                <View style={{ flex: 1 }}>
-                  <Text
-                    style={[styles.participantAddr, isMe && { color: "#a78bfa" }]}
-                  >
-                    {isMe ? "You" : `${addr.slice(0, 6)}...${addr.slice(-4)}`}
-                  </Text>
-                  <Text style={styles.participantMeta}>
-                    {p.account.submitted
-                      ? `Submitted: ${subResult.toUpperCase()}`
-                      : p.account.deposited
-                      ? "Deposited"
-                      : "Pending"}
-                    {p.account.disputeCount > 0 &&
-                      ` | ${p.account.disputeCount} dispute(s)`}
-                    {p.account.isWinner && " | WINNER"}
-                  </Text>
-                </View>
-
-                {/* Dispute button */}
-                {status === "submission" &&
-                  hasJoined &&
-                  publicKey &&
-                  !isMe &&
-                  p.account.submitted &&
-                  subResult === "success" && (
-                    <TouchableOpacity
-                      style={styles.disputeBtn}
-                      disabled={actionLoading}
-                      onPress={() =>
-                        handleAction(
-                          () =>
-                            disputeParticipant(
-                              publicKey,
-                              challengeId,
-                              new PublicKey(addr)
-                            ),
-                          "Dispute filed!"
-                        )
-                      }
-                    >
-                      <Text style={styles.disputeBtnText}>Dispute</Text>
-                    </TouchableOpacity>
-                  )}
-              </View>
-            );
-          })}
+          {participants.length > 0 ? (
+            participants.map((participant: (typeof participants)[number]) => (
+              <ParticipantStatusCard
+                key={participant.publicKey.toBase58()}
+                username={formatParticipantLabel(participant.account.participant.toBase58())}
+                submitted={participant.account.submitted}
+                result={formatParticipantResult(participant.account.submissionResult)}
+              />
+            ))
+          ) : (
+            <Text style={styles.emptyParticipants}>
+              {isLoading
+                ? "Loading participants..."
+                : "No participants have joined this challenge yet."}
+            </Text>
+          )}
         </View>
-      )}
 
-      {/* My Status */}
-      {myState && (
-        <View style={styles.myStatusCard}>
-          <Text style={styles.sectionTitle}>Your Status</Text>
-          <InfoRow
-            label="Deposited"
-            value={myState.deposited ? "Yes" : "No"}
-          />
-          <InfoRow
-            label="Submitted"
-            value={myState.submitted ? "Yes" : "No"}
-          />
-          {myState.submitted && (
-            <InfoRow
-              label="Result"
-              value={
-                Object.keys(myState.submissionResult)[0].toUpperCase()
-              }
+        <View style={styles.actionWrap}>
+          {canJoinAsCreator ? (
+            <PactButton
+              label="Join as Creator"
+              onPress={() => void onJoinAsCreator()}
+              loading={isJoiningCreator}
             />
-          )}
-          {myState.isWinner && (
-            <Text style={styles.winnerBadge}>WINNER</Text>
-          )}
+          ) : null}
+          {canStart ? (
+            <PactButton
+              label="Start Challenge"
+              onPress={() => void onStartChallenge()}
+              loading={isStarting}
+              style={canJoinAsCreator ? styles.actionButtonSpacing : undefined}
+            />
+          ) : null}
+          {merged.statusKey === "open" && isCreator && Number(merged.participantCount) < 2 ? (
+            <Text style={styles.actionHint}>Need at least 2 participants before the challenge can start.</Text>
+          ) : null}
+          {canSubmit ? (
+            <PactButton
+              label="Go to Submission"
+              onPress={() => navigation.navigate("Submission", { challengeId })}
+              style={canStart ? styles.actionButtonSpacing : undefined}
+            />
+          ) : null}
+          {canReview ? (
+            <PactButton
+              label="Review / Dispute"
+              variant="secondary"
+              onPress={() => navigation.navigate("ReviewDispute", { challengeId })}
+              style={styles.actionButtonSpacing}
+            />
+          ) : null}
+          {canViewSettlement ? (
+            <PactButton
+              label={merged.statusKey === "settled" ? "View Settlement" : "Settlement"}
+              variant="success"
+              onPress={() => navigation.navigate("Settlement", { challengeId })}
+              style={styles.actionButtonSpacing}
+            />
+          ) : null}
         </View>
-      )}
-
-      <View style={{ height: 40 }} />
-    </ScrollView>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
-function InfoRow({ label, value }: { label: string; value: string }) {
+function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <View style={styles.infoRow}>
-      <Text style={styles.infoLabel}>{label}</Text>
-      <Text style={styles.infoValue}>{value}</Text>
+    <View style={styles.metricBox}>
+      <Text style={styles.metricLabel}>{label}</Text>
+      <Text style={styles.metricValue}>{value}</Text>
     </View>
   );
 }
 
-function ActionButton({
-  label,
-  color,
-  disabled,
-  onPress,
-}: {
-  label: string;
-  color: string;
-  disabled: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <TouchableOpacity
-      style={[styles.actionBtn, { backgroundColor: color }, disabled && { opacity: 0.5 }]}
-      disabled={disabled}
-      onPress={onPress}
-    >
-      <Text style={styles.actionBtnText}>{label}</Text>
-    </TouchableOpacity>
-  );
+function formatStatus(status: string) {
+  switch (status) {
+    case "allFailVoting":
+      return "All-Fail Voting";
+    case "submission":
+      return "Submission";
+    case "settled":
+      return "Settled";
+    case "cancelled":
+      return "Cancelled";
+    case "open":
+      return "Open";
+    default:
+      return "Active";
+  }
+}
+
+function formatChallengeType(challengeType: "final_only" | "daily_checkin") {
+  return challengeType === "daily_checkin" ? "Daily Check-in" : "Final Only";
+}
+
+function getRulesText(config: ChallengeConfigResponse | null) {
+  const textRule = config?.rules?.rules_json?.text;
+  if (typeof textRule === "string" && textRule.trim()) {
+    return textRule.trim();
+  }
+
+  if (!config?.rules) {
+    return null;
+  }
+
+  const details: string[] = [];
+  if (typeof config.rules.required_checkins === "number") {
+    details.push(`Required check-ins: ${config.rules.required_checkins}`);
+  }
+  if (typeof config.rules.target_days === "number") {
+    details.push(`Target days: ${config.rules.target_days}`);
+  }
+  if (typeof config.rules.grace_days === "number") {
+    details.push(`Grace days: ${config.rules.grace_days}`);
+  }
+
+  return details.length > 0 ? details.join("\n") : null;
+}
+
+function formatParticipantLabel(address: string) {
+  return `${address.slice(0, 4)}...${address.slice(-4)}`;
+}
+
+function formatParticipantResult(submissionResult: Record<string, object>) {
+  const resultKey = Object.keys(submissionResult ?? {})[0];
+  if (resultKey === "Success") {
+    return "Success";
+  }
+  if (resultKey === "Fail") {
+    return "Fail";
+  }
+  return "Pending";
+}
+
+function getTimeMetricLabel(account: NonNullable<Awaited<ReturnType<typeof fetchChallenge>>>["account"]) {
+  const statusKey = Object.keys(account.status)[0];
+  if (statusKey === "open") {
+    return "Start";
+  }
+  if (statusKey === "settled" || statusKey === "cancelled") {
+    return "State";
+  }
+  return statusKey === "submission" ? "Submission Left" : "Time Left";
+}
+
+function getTimeLeftLabel(account: NonNullable<Awaited<ReturnType<typeof fetchChallenge>>>["account"]) {
+  const statusKey = Object.keys(account.status)[0];
+
+  if (statusKey === "open") {
+    return "Not started";
+  }
+  if (statusKey === "settled") {
+    return "Completed";
+  }
+  if (statusKey === "cancelled") {
+    return "Cancelled";
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const target =
+    statusKey === "submission"
+      ? account.submissionDeadline.toNumber()
+      : account.deadline.toNumber();
+
+  if (target <= 0) {
+    return statusKey === "submission" ? "Awaiting submit" : "Not started";
+  }
+
+  const diff = target - now;
+  if (diff <= 0) {
+    return statusKey === "submission" ? "Closed" : "Ended";
+  }
+
+  const days = Math.floor(diff / 86400);
+  const hours = Math.floor((diff % 86400) / 3600);
+  const minutes = Math.floor((diff % 3600) / 60);
+
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${minutes}m`;
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: "#0a0a0a" },
-  error: { color: "#ef4444", textAlign: "center", marginTop: 40, fontSize: 16 },
+  container: {
+    flex: 1,
+    backgroundColor: "#0C1018",
+  },
+  content: {
+    padding: 16,
+    gap: 14,
+    paddingBottom: 24,
+  },
+  headerCard: {
+    backgroundColor: "#13213A",
+    borderRadius: 22,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#294061",
+  },
   title: {
-    color: "#fff",
+    color: "#F8FAFC",
     fontSize: 24,
     fontWeight: "800",
-    marginBottom: 8,
+  },
+  challengeId: {
+    color: "#9FB4D0",
+    fontSize: 12,
+    marginTop: 4,
+  },
+  description: {
+    color: "#C8D7EA",
+    fontSize: 14,
+    lineHeight: 21,
+    marginTop: 10,
+  },
+  typeBadge: {
+    marginTop: 10,
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    backgroundColor: "#14304C",
+    borderColor: "#356A9A",
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  typeBadgeText: {
+    color: "#B8D9FF",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  metricRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 14,
+  },
+  metricBox: {
+    flex: 1,
+    backgroundColor: "#1A2C49",
+    borderRadius: 14,
+    padding: 12,
+  },
+  metricLabel: {
+    color: "#95A8C3",
+    fontSize: 12,
+  },
+  metricValue: {
+    color: "#F8FAFC",
+    fontWeight: "700",
+    fontSize: 18,
+    marginTop: 4,
   },
   statusBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 16,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 8,
-  },
-  statusText: { fontSize: 14, fontWeight: "700" },
-  cycleText: {
-    color: "#9ca3af",
-    fontSize: 12,
-    marginLeft: 12,
-  },
-  countdownCard: {
-    backgroundColor: "#1a1a2e",
-    borderRadius: 12,
-    padding: 16,
-    alignItems: "center",
-    marginBottom: 16,
+    marginTop: 12,
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    backgroundColor: "#2DA5FF22",
+    borderColor: "#2DA5FF",
     borderWidth: 1,
-    borderColor: "#f59e0b",
-  },
-  countdownLabel: { color: "#9ca3af", fontSize: 12, marginBottom: 4 },
-  countdownValue: {
-    color: "#f59e0b",
-    fontSize: 28,
-    fontWeight: "800",
-    fontFamily: "monospace",
-  },
-  poolCard: {
-    backgroundColor: "#1a1a2e",
-    borderRadius: 16,
-    padding: 24,
-    alignItems: "center",
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: "#7c3aed",
-  },
-  poolLabel: { color: "#9ca3af", fontSize: 14, marginBottom: 8 },
-  poolAmount: { color: "#4ade80", fontSize: 36, fontWeight: "800" },
-  infoSection: { marginBottom: 16 },
-  infoRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#1a1a2e",
-  },
-  infoLabel: { color: "#9ca3af", fontSize: 16 },
-  infoValue: { color: "#fff", fontSize: 16, fontWeight: "600" },
-  actionsSection: { marginBottom: 20 },
-  actionBtn: {
-    padding: 16,
-    borderRadius: 12,
-    alignItems: "center",
-    marginBottom: 10,
-  },
-  actionBtnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
-  participantsSection: {
-    backgroundColor: "#1a1a2e",
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
-  },
-  sectionTitle: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "700",
-    marginBottom: 12,
-  },
-  participantRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "#2d2d44",
-  },
-  participantAddr: {
-    color: "#e5e7eb",
-    fontSize: 14,
-    fontFamily: "monospace",
-  },
-  participantMeta: { color: "#6b7280", fontSize: 12, marginTop: 2 },
-  disputeBtn: {
-    backgroundColor: "#dc262633",
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 8,
+  },
+  statusText: {
+    color: "#72C2FF",
+    fontWeight: "700",
+  },
+  shareRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 14,
+  },
+  shareButton: {
+    flex: 1,
+  },
+  rulesCard: {
+    backgroundColor: "#131C2B",
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "#dc2626",
+    borderColor: "#273247",
+    padding: 14,
   },
-  disputeBtnText: { color: "#ef4444", fontSize: 12, fontWeight: "600" },
-  myStatusCard: {
-    backgroundColor: "#1a1a2e",
-    borderRadius: 12,
-    padding: 16,
+  participantsWrap: {
+    backgroundColor: "#131C2B",
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "#7c3aed",
+    borderColor: "#273247",
+    padding: 14,
   },
-  winnerBadge: {
-    color: "#4ade80",
-    fontSize: 20,
-    fontWeight: "800",
-    textAlign: "center",
-    marginTop: 8,
-  },
-  proofPreview: {
-    backgroundColor: "#1a1a2e",
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 10,
-    alignItems: "center",
-  },
-  proofImage: {
-    width: "100%",
-    height: 200,
-    borderRadius: 8,
+  sectionTitle: {
+    color: "#F8FAFC",
+    fontSize: 17,
+    fontWeight: "700",
     marginBottom: 8,
   },
-  removeProofBtn: {
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: "#dc262633",
-    borderWidth: 1,
-    borderColor: "#dc2626",
+  rulesText: {
+    color: "#B8C7DA",
+    fontSize: 14,
+    lineHeight: 22,
   },
-  removeProofText: {
-    color: "#ef4444",
-    fontSize: 12,
-    fontWeight: "600",
+  emptyParticipants: {
+    color: "#8FA0B8",
+    fontSize: 14,
+    lineHeight: 20,
+    paddingVertical: 8,
+  },
+  actionWrap: {
+    marginTop: 2,
+  },
+  actionHint: {
+    color: "#8FA0B8",
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  actionButtonSpacing: {
+    marginTop: 10,
   },
 });
